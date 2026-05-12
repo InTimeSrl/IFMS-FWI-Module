@@ -89,6 +89,7 @@ Campi principali:
 - `datasets.*`: collezioni CDS, variabili e orari da estrarre
 - `paths.*`: cache, output e database SQLite locale
 - `storage.*`: formato, compressione e naming file
+- `storage.intermediate_output`: `full` per mantenere gli intermedi correnti, `climatology` per salvare solo `fwi` e `mask` negli output mensili
 - `processing.*`: resume, soglia terra/mare, buffer costiero opzionale, limiti operativi
 - `percentile.*`: baseline multiannuale per il prodotto finale P90, mesi da includere, percentile richiesto, blocchi spaziali e naming dell'output finale
 
@@ -156,6 +157,11 @@ Se `storage.include_inputs` e' attivo, il file contiene anche gli input meteorol
 - `precipitation`
 - `mask`
 
+Se `storage.intermediate_output: climatology`, gli output mensili intermedi vengono alleggeriti e contengono solo:
+
+- `fwi`
+- `mask`
+
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
 
 Quando e' configurata la sezione `percentile`, il package puo' produrre anche un raster finale con una variabile `fwi_pXX` che assegna a ogni cella il percentile richiesto dei valori giornalieri `fwi` calcolati sui mesi selezionati e su tutta la baseline multiannuale. Il file finale viene scritto nella stessa `output_dir` degli output mensili, con un nome derivato da `percentile.output_template`.
@@ -176,7 +182,7 @@ Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della grig
 - calcolo FWI sequenziale nel tempo ma vettorizzato nello spazio
 - per il prodotto multiyear P90 il processing viene eseguito stagione per stagione e anno per anno, con cataloghi di resume separati per annualita'
 - l'aggregazione finale legge solo blocchi spaziali 2D della variabile `fwi` dai NetCDF mensili, evitando di materializzare in RAM tutta la serie 20/30 anni
-- per run lunghi su PC con 16GB di RAM e' consigliato impostare `storage.include_inputs: false`, cosi' si riducono I/O e spazio disco degli intermedi mensili
+- per run climatologici lunghi su PC con 16GB di RAM e' consigliato impostare `storage.intermediate_output: climatology`; in questo modo gli intermedi mensili salvano solo `fwi` e `mask`, riducendo I/O e spazio disco senza cambiare la logica del percentile finale
 
 ### Note operative
 

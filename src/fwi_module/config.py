@@ -187,6 +187,7 @@ class StorageConfig(BaseModel):
     compression_level: int = Field(default=4, ge=0, le=9)
     chunk_shape: tuple[int, int, int] = (1, 128, 128)
     include_inputs: bool = True
+    intermediate_output: Literal["full", "climatology"] = "full"
     filename_template: str = "fwi_{year}{month:02d}.nc"
     state_template: str = "state_{year}{month:02d}{day:02d}.nc"
 
@@ -388,6 +389,7 @@ def dump_example_config() -> dict[str, Any]:
                 "compression_level": 4,
                 "chunk_shape": [1, 128, 128],
                 "include_inputs": True,
+                "intermediate_output": "full",
                 "filename_template": "fwi_{year}{month:02d}.nc",
                 "state_template": "state_{year}{month:02d}{day:02d}.nc",
             },

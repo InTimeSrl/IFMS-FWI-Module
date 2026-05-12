@@ -19,6 +19,7 @@ def test_example_config_loads_and_resolves_paths() -> None:
     assert config.datasets.atmosphere.collection_id == "reanalysis-cerra-single-levels"
     assert config.paths.cache_dir.is_absolute()
     assert config.paths.catalog_db == config.paths.state_dir / "catalog.sqlite"
+    assert config.storage.intermediate_output == "full"
     assert config.percentile is not None
     assert config.percentile.start_year == 1991
     assert config.percentile.months == (5, 6, 7, 8, 9)

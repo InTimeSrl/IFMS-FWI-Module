@@ -73,6 +73,38 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
     assert len(backend.requests) == first_request_count
 
 
+def test_processor_writes_climatology_intermediate_outputs(tmp_path: Path, monkeypatch) -> None:
+    raw = dump_example_config()
+    raw["period"] = {"start": "2023-04-01", "end": "2023-04-07", "spinup_days": 0}
+    raw["paths"] = {
+        "cache_dir": str(tmp_path / "cache"),
+        "output_dir": str(tmp_path / "output"),
+        "state_dir": str(tmp_path / "state"),
+        "catalog_db": str(tmp_path / "state" / "catalog.sqlite"),
+    }
+    raw["datasets"]["atmosphere"]["data_format"] = "netcdf"
+    raw["datasets"]["land"]["data_format"] = "netcdf"
+    raw["storage"]["intermediate_output"] = "climatology"
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+
+    monkeypatch.setattr(
+        "fwi_module.preprocess.apply_spatial_mask",
+        lambda dataset, land_sea_mask, country_name, land_sea_threshold, coastal_buffer_cells: dataset.assign(
+            mask=((land_sea_mask.isel(time=0, drop=True) >= land_sea_threshold).astype("uint8"))
+        ),
+    )
+
+    backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
+    outputs = FWIProcessor(config, backend=backend).run(resume=False)
+
+    assert len(outputs) == 1
+    with xr.open_dataset(outputs[0]) as dataset:
+        assert set(dataset.data_vars) == {"fwi", "mask", "spatial_ref"}
+        assert "temperature" not in dataset.data_vars
+        assert "ffmc" not in dataset.data_vars
+        assert dataset["fwi"].attrs["grid_mapping"] == "spatial_ref"
+
+
 def test_processor_annotates_native_lambert_grid_when_projection_metadata_is_present(tmp_path: Path) -> None:
     config = AppConfig.model_validate(dump_example_config()).resolved(tmp_path)
     processor = FWIProcessor(config, backend=FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id))
@@ -192,6 +224,7 @@ def test_run_percentile_product_processes_each_year_and_writes_final_raster(tmp_
     }
     raw["datasets"]["atmosphere"]["data_format"] = "netcdf"
     raw["datasets"]["land"]["data_format"] = "netcdf"
+    raw["storage"]["intermediate_output"] = "climatology"
     raw["percentile"] = {
         "start_year": 2020,
         "end_year": 2021,
@@ -226,6 +259,8 @@ def test_run_percentile_product_processes_each_year_and_writes_final_raster(tmp_
     assert len(backend.requests) == 4
 
     with xr.open_dataset(may_2020) as first_year, xr.open_dataset(may_2021) as second_year, xr.open_dataset(output_path) as aggregated:
+        assert set(first_year.data_vars) == {"fwi", "mask", "spatial_ref"}
+        assert set(second_year.data_vars) == {"fwi", "mask", "spatial_ref"}
         expected = np.nanpercentile(np.concatenate([first_year["fwi"].values, second_year["fwi"].values], axis=0), 90.0, axis=0)
         np.testing.assert_allclose(aggregated["fwi_p90"].values, expected)
 

@@ -265,6 +265,10 @@ class FWIProcessor:
         return state, next_index
 
     def _compose_output_dataset(self, prepared: PreparedInputs, fwi_outputs: xr.Dataset) -> xr.Dataset:
+        if self.config.storage.intermediate_output == "climatology":
+            output = xr.merge([prepared.dataset[["mask"]], fwi_outputs[["fwi"]]], compat="override", join="inner")
+            return self._annotate_output_georeferencing(output)
+
         if self.config.storage.include_inputs:
             meteorology = prepared.dataset[["temperature", "relative_humidity", "wind_speed", "precipitation", "mask"]]
             output = xr.merge([meteorology, fwi_outputs], compat="override", join="inner")

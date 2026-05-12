@@ -68,6 +68,7 @@ storage:
   compression_level: 4
   chunk_shape: [1, 128, 128]
   include_inputs: true
+  intermediate_output: full
   filename_template: fwi_{year}{month:02d}.nc
   state_template: state_{year}{month:02d}{day:02d}.nc
 
