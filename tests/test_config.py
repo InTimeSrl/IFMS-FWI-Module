@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from fwi_module.config import AppConfig, dump_example_config, load_config
+from fwi_module.exceptions import ConfigError
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_example_config_loads_and_resolves_paths() -> None:
+    config = load_config(PROJECT_ROOT / "examples" / "greece.yaml")
+
+    assert config.region.country_name == "Greece"
+    assert config.period.extended_start.isoformat() == "2023-01-01"
+    assert config.datasets.atmosphere.collection_id == "reanalysis-cerra-single-levels"
+    assert config.paths.cache_dir.is_absolute()
+    assert config.paths.catalog_db == config.paths.state_dir / "catalog.sqlite"
+
+
+def test_invalid_bbox_is_rejected() -> None:
+    data = dump_example_config()
+    data["region"]["bbox"]["north"] = 34.0
+    data["region"]["bbox"]["south"] = 35.0
+
+    with pytest.raises(Exception):
+        AppConfig.model_validate(data)
+
+
+def test_invalid_yaml_path_raises_config_error() -> None:
+    with pytest.raises(ConfigError):
+        load_config(PROJECT_ROOT / "examples" / "missing.yaml")
