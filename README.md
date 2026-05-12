@@ -90,6 +90,7 @@ Campi principali:
 - `paths.*`: cache, output e database SQLite locale
 - `storage.*`: formato, compressione e naming file
 - `processing.*`: resume, soglia terra/mare, buffer costiero opzionale, limiti operativi
+- `percentile.*`: baseline multiannuale per il prodotto finale P90, mesi da includere, percentile richiesto, blocchi spaziali e naming dell'output finale
 
 ### CLI
 
@@ -115,6 +116,18 @@ Ripresa di un job interrotto:
 
 ```powershell
 uv run fwi-module resume examples/greece.yaml
+```
+
+Workflow completo per costruire il raster finale multiyear P90 sui giorni maggio-settembre:
+
+```powershell
+uv run fwi-module run-percentile examples/greece.yaml
+```
+
+Aggregazione finale del raster P90 a partire dagli output mensili gia' presenti:
+
+```powershell
+uv run fwi-module aggregate-percentile examples/greece.yaml
 ```
 
 Ispezione cache/catalogo:
@@ -145,6 +158,8 @@ Se `storage.include_inputs` e' attivo, il file contiene anche gli input meteorol
 
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
 
+Quando e' configurata la sezione `percentile`, il package puo' produrre anche un raster finale con una variabile `fwi_pXX` che assegna a ogni cella il percentile richiesto dei valori giornalieri `fwi` calcolati sui mesi selezionati e su tutta la baseline multiannuale. Il file finale viene scritto nella stessa `output_dir` degli output mensili, con un nome derivato da `percentile.output_template`.
+
 Per aumentare la copertura costiera si possono combinare:
 
 - `processing.land_sea_threshold`: con `0.0` viene tenuto qualunque pixel con una frazione di terra positiva
@@ -159,6 +174,9 @@ Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della grig
 - riuso della cache locale per richieste identiche
 - checkpoint per finestra completata
 - calcolo FWI sequenziale nel tempo ma vettorizzato nello spazio
+- per il prodotto multiyear P90 il processing viene eseguito stagione per stagione e anno per anno, con cataloghi di resume separati per annualita'
+- l'aggregazione finale legge solo blocchi spaziali 2D della variabile `fwi` dai NetCDF mensili, evitando di materializzare in RAM tutta la serie 20/30 anni
+- per run lunghi su PC con 16GB di RAM e' consigliato impostare `storage.include_inputs: false`, cosi' si riducono I/O e spazio disco degli intermedi mensili
 
 ### Note operative
 

@@ -82,3 +82,12 @@ initial_state:
   ffmc: 85.0
   dmc: 6.0
   dc: 15.0
+
+percentile:
+  start_year: 1991
+  end_year: 2020
+  months: [5, 6, 7, 8, 9]
+  percentile: 90.0
+  method: exact
+  block_shape: [128, 128]
+  output_template: fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc

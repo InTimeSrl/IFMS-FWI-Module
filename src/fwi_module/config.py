@@ -213,6 +213,44 @@ class InitialStateConfig(BaseModel):
     dc: float = 15.0
 
 
+class PercentileConfig(BaseModel):
+    """Configuration for a multi-year seasonal percentile product."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_year: int = Field(ge=1900, le=3000)
+    end_year: int = Field(ge=1900, le=3000)
+    months: tuple[int, ...] = (5, 6, 7, 8, 9)
+    percentile: float = Field(default=90.0, ge=0.0, le=100.0)
+    method: Literal["exact"] = "exact"
+    block_shape: tuple[int, int] = (128, 128)
+    output_template: str = "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc"
+
+    @field_validator("months")
+    @classmethod
+    def validate_months(cls, values: tuple[int, ...]) -> tuple[int, ...]:
+        if not values:
+            raise ValueError("percentile.months must contain at least one month")
+        if any(month < 1 or month > 12 for month in values):
+            raise ValueError("percentile.months must contain values between 1 and 12")
+        if len(set(values)) != len(values):
+            raise ValueError("percentile.months must not contain duplicates")
+        return tuple(sorted(values))
+
+    @field_validator("block_shape")
+    @classmethod
+    def validate_block_shape(cls, values: tuple[int, int]) -> tuple[int, int]:
+        if any(size <= 0 for size in values):
+            raise ValueError("percentile.block_shape must contain positive sizes")
+        return values
+
+    @model_validator(mode="after")
+    def validate_year_range(self) -> "PercentileConfig":
+        if self.end_year < self.start_year:
+            raise ValueError("percentile.end_year must be on or after percentile.start_year")
+        return self
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -227,6 +265,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
+    percentile: PercentileConfig | None = None
 
     def resolved(self, base_dir: Path) -> "AppConfig":
         data = self.model_dump(mode="python")
@@ -360,5 +399,14 @@ def dump_example_config() -> dict[str, Any]:
                 "fail_on_dataset_gap": True,
             },
             "initial_state": {"ffmc": 85.0, "dmc": 6.0, "dc": 15.0},
+            "percentile": {
+                "start_year": 1991,
+                "end_year": 2020,
+                "months": [5, 6, 7, 8, 9],
+                "percentile": 90.0,
+                "method": "exact",
+                "block_shape": [128, 128],
+                "output_template": "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc",
+            },
         }
     )

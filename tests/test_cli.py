@@ -122,6 +122,52 @@ def test_run_period_override_is_passed_to_processor(tmp_path: Path, monkeypatch)
     assert state["resume"] is False
 
 
+def test_run_percentile_invokes_processor(tmp_path: Path, monkeypatch) -> None:
+    import fwi_module.processor as processor_module
+
+    config_path = _write_config(tmp_path)
+    state: dict[str, object] = {}
+
+    class FakeProcessor:
+        def __init__(self, config) -> None:
+            state["start_year"] = config.percentile.start_year if config.percentile is not None else None
+
+        def run_percentile_product(self, *, resume: bool | None = None):
+            state["resume"] = resume
+            return Path("output/fwi_p90_1991_2020.nc")
+
+    monkeypatch.setattr(processor_module, "FWIProcessor", FakeProcessor)
+
+    exit_code = main(["run-percentile", str(config_path), "--no-resume"])
+
+    assert exit_code == 0
+    assert state["start_year"] == 1991
+    assert state["resume"] is False
+
+
+def test_aggregate_percentile_invokes_processor(tmp_path: Path, monkeypatch) -> None:
+    import fwi_module.processor as processor_module
+
+    config_path = _write_config(tmp_path)
+    state: dict[str, object] = {}
+
+    class FakeProcessor:
+        def __init__(self, config) -> None:
+            state["end_year"] = config.percentile.end_year if config.percentile is not None else None
+
+        def aggregate_percentile_product(self):
+            state["called"] = True
+            return Path("output/fwi_p90_1991_2020.nc")
+
+    monkeypatch.setattr(processor_module, "FWIProcessor", FakeProcessor)
+
+    exit_code = main(["aggregate-percentile", str(config_path)])
+
+    assert exit_code == 0
+    assert state["end_year"] == 2020
+    assert state["called"] is True
+
+
 def _write_config(tmp_path: Path, *, client: str = "ecmwf_datastores") -> Path:
     import yaml
 

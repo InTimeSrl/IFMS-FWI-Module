@@ -113,6 +113,123 @@ def test_processor_annotates_native_lambert_grid_when_projection_metadata_is_pre
     assert annotated.coords["y"].attrs["standard_name"] == "projection_y_coordinate"
 
 
+def test_processor_aggregates_multi_year_percentile_in_spatial_blocks(tmp_path: Path) -> None:
+    raw = dump_example_config()
+    raw["paths"] = {
+        "cache_dir": str(tmp_path / "cache"),
+        "output_dir": str(tmp_path / "output"),
+        "state_dir": str(tmp_path / "state"),
+        "catalog_db": str(tmp_path / "state" / "catalog.sqlite"),
+    }
+    raw["percentile"] = {
+        "start_year": 2020,
+        "end_year": 2021,
+        "months": [5, 6],
+        "percentile": 90.0,
+        "method": "exact",
+        "block_shape": [1, 1],
+        "output_template": "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc",
+    }
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+    processor = FWIProcessor(config, backend=FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id))
+
+    monthly_values = {
+        (2020, 5): np.array(
+            [
+                [[10.0, 20.0], [30.0, 40.0]],
+                [[12.0, 22.0], [32.0, 42.0]],
+            ],
+            dtype=np.float32,
+        ),
+        (2020, 6): np.array(
+            [
+                [[14.0, 24.0], [34.0, 44.0]],
+                [[16.0, 26.0], [36.0, 46.0]],
+            ],
+            dtype=np.float32,
+        ),
+        (2021, 5): np.array(
+            [
+                [[18.0, 28.0], [38.0, 48.0]],
+                [[20.0, 30.0], [40.0, 50.0]],
+            ],
+            dtype=np.float32,
+        ),
+        (2021, 6): np.array(
+            [
+                [[22.0, 32.0], [42.0, 52.0]],
+                [[24.0, 34.0], [44.0, 54.0]],
+            ],
+            dtype=np.float32,
+        ),
+    }
+
+    for (year, month), values in monthly_values.items():
+        _write_monthly_fwi_output(config.paths.output_dir / config.storage.filename_template.format(year=year, month=month), year, month, values)
+
+    output_path = processor.aggregate_percentile_product()
+
+    assert output_path.exists()
+    stacked = np.concatenate(list(monthly_values.values()), axis=0)
+    expected = np.nanpercentile(stacked, 90.0, axis=0)
+
+    with xr.open_dataset(output_path) as dataset:
+        np.testing.assert_allclose(dataset["fwi_p90"].values, expected)
+        assert dataset.attrs["Conventions"] == "CF-1.8"
+        assert dataset.attrs["baseline_years"] == "2020-2021"
+        assert dataset["fwi_p90"].attrs["grid_mapping"] == "spatial_ref"
+        assert dataset["mask"].dtype.kind in {"i", "u"}
+
+
+def test_run_percentile_product_processes_each_year_and_writes_final_raster(tmp_path: Path, monkeypatch) -> None:
+    raw = dump_example_config()
+    raw["period"] = {"start": "2023-05-01", "end": "2023-05-31", "spinup_days": 0}
+    raw["paths"] = {
+        "cache_dir": str(tmp_path / "cache"),
+        "output_dir": str(tmp_path / "output"),
+        "state_dir": str(tmp_path / "state"),
+        "catalog_db": str(tmp_path / "state" / "catalog.sqlite"),
+    }
+    raw["datasets"]["atmosphere"]["data_format"] = "netcdf"
+    raw["datasets"]["land"]["data_format"] = "netcdf"
+    raw["percentile"] = {
+        "start_year": 2020,
+        "end_year": 2021,
+        "months": [5],
+        "percentile": 90.0,
+        "method": "exact",
+        "block_shape": [1, 1],
+        "output_template": "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc",
+    }
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+
+    monkeypatch.setattr(
+        "fwi_module.preprocess.apply_spatial_mask",
+        lambda dataset, land_sea_mask, country_name, land_sea_threshold, coastal_buffer_cells: dataset.assign(
+            mask=((land_sea_mask.isel(time=0, drop=True) >= land_sea_threshold).astype("uint8"))
+        ),
+    )
+
+    backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
+    processor = FWIProcessor(config, backend=backend)
+
+    output_path = processor.run_percentile_product(resume=False)
+
+    may_2020 = config.paths.output_dir / config.storage.filename_template.format(year=2020, month=5)
+    may_2021 = config.paths.output_dir / config.storage.filename_template.format(year=2021, month=5)
+
+    assert output_path.exists()
+    assert may_2020.exists()
+    assert may_2021.exists()
+    assert (config.paths.state_dir / "percentile" / "2020" / "catalog.sqlite").exists()
+    assert (config.paths.state_dir / "percentile" / "2021" / "catalog.sqlite").exists()
+    assert len(backend.requests) == 4
+
+    with xr.open_dataset(may_2020) as first_year, xr.open_dataset(may_2021) as second_year, xr.open_dataset(output_path) as aggregated:
+        expected = np.nanpercentile(np.concatenate([first_year["fwi"].values, second_year["fwi"].values], axis=0), 90.0, axis=0)
+        np.testing.assert_allclose(aggregated["fwi_p90"].values, expected)
+
+
 def _write_fake_dataset(
     collection_id: str,
     request: dict[str, object],
@@ -156,3 +273,26 @@ def _write_fake_dataset(
         raise AssertionError(f"unexpected collection: {collection_id}")
 
     dataset.to_netcdf(target_path)
+
+
+def _write_monthly_fwi_output(path: Path, year: int, month: int, values: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    times = np.array([f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-02"], dtype="datetime64[ns]")
+    lat = xr.DataArray(np.array([[39.0, 39.2], [38.8, 39.1]], dtype=float), dims=("y", "x"))
+    lon = xr.DataArray(np.array([[22.0, 22.2], [22.1, 22.3]], dtype=float), dims=("y", "x"))
+    mask = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+
+    dataset = xr.Dataset(
+        data_vars={
+            "fwi": (("time", "y", "x"), values),
+            "mask": (("y", "x"), mask),
+        },
+        coords={
+            "time": times,
+            "y": [0, 1],
+            "x": [0, 1],
+            "lat": lat,
+            "lon": lon,
+        },
+    )
+    dataset.to_netcdf(path)

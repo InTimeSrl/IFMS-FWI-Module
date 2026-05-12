@@ -37,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--end", type=str, help="Override the processing end date (YYYY-MM-DD)")
     run_parser.add_argument("--no-resume", action="store_true", help="Disable resume even if configured")
 
+    run_percentile_parser = subparsers.add_parser("run-percentile", help="Run the multi-year seasonal percentile workflow")
+    run_percentile_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+    run_percentile_parser.add_argument("--no-resume", action="store_true", help="Disable resume even if configured")
+
+    aggregate_percentile_parser = subparsers.add_parser(
+        "aggregate-percentile",
+        help="Aggregate existing monthly outputs into the configured percentile raster",
+    )
+    aggregate_percentile_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+
     resume_parser = subparsers.add_parser("resume", help="Resume the processing pipeline")
     resume_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
     resume_parser.add_argument("--start", type=str, help="Override the processing start date (YYYY-MM-DD)")
@@ -70,6 +80,24 @@ def main(argv: list[str] | None = None) -> int:
 
             processor = FWIProcessor(config)
             processor.run(resume=(args.command == "resume") or (not args.no_resume and config.processing.resume))
+            return 0
+
+        if args.command == "run-percentile":
+            config = load_config(args.config)
+            from .processor import FWIProcessor
+
+            processor = FWIProcessor(config)
+            output_path = processor.run_percentile_product(resume=not args.no_resume and config.processing.resume)
+            print(f"Percentile output: {output_path}")
+            return 0
+
+        if args.command == "aggregate-percentile":
+            config = load_config(args.config)
+            from .processor import FWIProcessor
+
+            processor = FWIProcessor(config)
+            output_path = processor.aggregate_percentile_product()
+            print(f"Percentile output: {output_path}")
             return 0
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
