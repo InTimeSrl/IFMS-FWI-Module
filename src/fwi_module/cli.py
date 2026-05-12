@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
 
+from .cds_client import CERRADataDownloader
+from .checkpointing import CatalogStore
 from .config import load_config
 from .exceptions import ConfigError, FWIError
+from .utils import ProcessingWindow, month_windows
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_parser = subparsers.add_parser("inspect-cache", help="Inspect the local catalog database")
     inspect_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+
+    probe_parser = subparsers.add_parser("probe-cds", help="Check CDS authentication and optionally download a sample window")
+    probe_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+    probe_parser.add_argument("--start", type=str, help="Sample window start date in ISO format (YYYY-MM-DD)")
+    probe_parser.add_argument("--end", type=str, help="Sample window end date in ISO format (YYYY-MM-DD)")
+    probe_parser.add_argument("--download", action="store_true", help="Download the sample window after validating authentication")
 
     run_parser = subparsers.add_parser("run", help="Run the processing pipeline")
     run_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
@@ -44,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "inspect-cache":
             config = load_config(args.config)
             return _inspect_cache(config.paths.catalog_db)
+
+        if args.command == "probe-cds":
+            config = load_config(args.config)
+            return _probe_cds(config, start=args.start, end=args.end, download=args.download)
 
         if args.command in {"run", "resume"}:
             config = load_config(args.config)
@@ -84,3 +98,45 @@ def _inspect_cache(db_path: Path) -> int:
             print(f"{table_name}: {count}")
 
     return 0
+
+
+def _probe_cds(config, *, start: str | None, end: str | None, download: bool) -> int:
+    window = _probe_window(config, start=start, end=end) if download or start or end else None
+    catalog = CatalogStore(config.paths.catalog_db)
+    downloader = CERRADataDownloader(config, catalog)
+    downloader.check_authentication()
+
+    atmosphere_id = config.datasets.atmosphere.collection_id
+    land_id = config.datasets.land.collection_id
+    atmosphere_end = downloader.backend.get_collection_end_date(atmosphere_id)
+    land_end = downloader.backend.get_collection_end_date(land_id)
+
+    print(f"CDS authentication: OK")
+    print(f"Atmosphere collection: {atmosphere_id}")
+    print(f"Atmosphere latest date: {atmosphere_end.isoformat() if atmosphere_end else 'unknown'}")
+    print(f"Land collection: {land_id}")
+    print(f"Land latest date: {land_end.isoformat() if land_end else 'unknown'}")
+
+    if not download:
+        return 0
+
+    assert window is not None
+    downloaded = downloader.fetch_window(window)
+    print(f"Downloaded atmosphere file: {downloaded.atmosphere_path}")
+    print(f"Downloaded land file: {downloaded.land_path}")
+    return 0
+
+
+def _probe_window(config, *, start: str | None, end: str | None) -> ProcessingWindow:
+    if bool(start) != bool(end):
+        raise ConfigError("probe-cds requires both --start and --end when overriding the sample window")
+    if start and end:
+        try:
+            return ProcessingWindow(start=date.fromisoformat(start), end=date.fromisoformat(end))
+        except ValueError as exc:
+            raise ConfigError("invalid ISO date passed to probe-cds") from exc
+
+    windows = month_windows(config.period.start, config.period.end)
+    if not windows:
+        raise ConfigError("configuration period does not contain any monthly processing window")
+    return windows[0]

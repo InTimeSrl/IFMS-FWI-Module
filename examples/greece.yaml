@@ -24,6 +24,10 @@ datasets:
     request_base:
       data_type:
         - reanalysis
+      product_type:
+        - analysis
+      level_type:
+        - surface_or_atmosphere
     variable_map:
       temperature: 2m_temperature
       relative_humidity: 2m_relative_humidity
@@ -34,7 +38,11 @@ datasets:
     download_format: unarchived
   land:
     collection_id: reanalysis-cerra-land
-    request_base: {}
+    request_base:
+      product_type:
+        - analysis
+      level_type:
+        - surface
     variable_map:
       precipitation: total_precipitation
       land_sea_mask: land_sea_mask
@@ -45,6 +53,7 @@ datasets:
 
 download:
   chunking: monthly
+  remote_area_subset: false
   retry_attempts: 4
   retry_wait_seconds: 30
 

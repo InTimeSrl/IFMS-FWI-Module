@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from .config import AppConfig, DatasetRequestConfig
+from .config import AppConfig, BoundingBox, DatasetRequestConfig
 from .exceptions import ProcessingError
 from .masking import apply_spatial_mask
 
@@ -31,9 +31,36 @@ def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig
         atmosphere_raw.close()
         land_raw.close()
 
-    merged = xr.merge([atmosphere, land[["precipitation"]]], compat="override", join="inner")
-    masked = apply_spatial_mask(merged, land["land_sea_mask"], config.region.country_name, config.processing.land_sea_threshold)
+    merged = xr.merge([atmosphere, land], compat="override", join="inner")
+    merged = clip_to_bbox(merged, config.region.bbox)
+    land_sea_mask = merged["land_sea_mask"]
+    masked = apply_spatial_mask(
+        merged.drop_vars("land_sea_mask"),
+        land_sea_mask,
+        config.region.country_name,
+        config.processing.land_sea_threshold,
+    )
     return PreparedInputs(dataset=masked, land_mask=masked["mask"])
+
+
+def clip_to_bbox(dataset: xr.Dataset, bbox: BoundingBox) -> xr.Dataset:
+    """Crop the dataset to the smallest grid rectangle intersecting the configured bbox."""
+
+    lon, lat = _extract_lon_lat(dataset)
+    bbox_mask = (lat >= bbox.south) & (lat <= bbox.north) & (lon >= bbox.west) & (lon <= bbox.east)
+
+    if not bool(bbox_mask.any().item()):
+        raise ProcessingError("configured bbox does not intersect the downloaded dataset domain")
+
+    if bbox_mask.ndim >= 2:
+        row_dim, col_dim = bbox_mask.dims[-2], bbox_mask.dims[-1]
+        valid_rows = bbox_mask.any(dim=col_dim)
+        valid_cols = bbox_mask.any(dim=row_dim)
+        dataset = dataset.isel({row_dim: valid_rows, col_dim: valid_cols})
+        lon, lat = _extract_lon_lat(dataset)
+        bbox_mask = (lat >= bbox.south) & (lat <= bbox.north) & (lon >= bbox.west) & (lon <= bbox.east)
+
+    return dataset.where(bbox_mask)
 
 
 def open_dataset_file(path: Path) -> xr.Dataset:
@@ -111,6 +138,28 @@ def _standardize_dataset(dataset: xr.Dataset) -> xr.Dataset:
     if rename_map:
         dataset = dataset.rename(rename_map)
     return dataset.sortby("time") if "time" in dataset.coords else dataset
+
+
+def _extract_lon_lat(dataset: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
+    lon = _find_coord_or_var(dataset, ("lon", "longitude"))
+    lat = _find_coord_or_var(dataset, ("lat", "latitude"))
+
+    if lon.ndim == 1 and lat.ndim == 1:
+        lon, lat = xr.broadcast(lon, lat)
+    elif lon.dims != lat.dims:
+        lon, lat = xr.broadcast(lon, lat)
+    return lon, lat
+
+
+def _find_coord_or_var(dataset: xr.Dataset, names: tuple[str, ...]) -> xr.DataArray:
+    for name in names:
+        if name in dataset.coords:
+            value = dataset.coords[name]
+            return value.isel(time=0, drop=True) if "time" in value.dims else value
+        if name in dataset.data_vars:
+            value = dataset[name]
+            return value.isel(time=0, drop=True) if "time" in value.dims else value
+    raise ProcessingError(f"dataset is missing coordinate(s): {', '.join(names)}")
 
 
 def _convert_temperature(data_array: xr.DataArray) -> xr.DataArray:

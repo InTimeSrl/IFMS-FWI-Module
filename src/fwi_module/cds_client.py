@@ -67,14 +67,20 @@ class ECMWFDataStoresBackend:
             remote = self._get_client().submit(collection_id, request)
             remote.download(str(target_path))
         except Exception as exc:  # pragma: no cover - depends on external service
-            raise DownloadError(f"download failed for collection {collection_id}") from exc
+            raise DownloadError(f"download failed for collection {collection_id}: {exc}") from exc
         return getattr(remote, "request_id", None)
 
     def _get_client(self):
         if self._client is None:
             from ecmwf.datastores import Client
 
-            url, key = _resolve_credentials(self.config, default_url="https://cds.climate.copernicus.eu/api", default_rc_name=".ecmwfdatastoresrc")
+            url, key = _resolve_credentials(
+                self.config,
+                default_url="https://cds.climate.copernicus.eu/api",
+                default_rc_name=".ecmwfdatastoresrc",
+                fallback_url_envs=("CDSAPI_URL",),
+                fallback_key_envs=("CDSAPI_KEY",),
+            )
             kwargs: dict[str, str] = {}
             if url is not None:
                 kwargs["url"] = url
@@ -101,14 +107,20 @@ class CdsApiBackend:
         try:
             self._get_client().retrieve(collection_id, request, str(target_path))
         except Exception as exc:  # pragma: no cover - depends on external service
-            raise DownloadError(f"download failed for collection {collection_id}") from exc
+            raise DownloadError(f"download failed for collection {collection_id}: {exc}") from exc
         return None
 
     def _get_client(self):
         if self._client is None:
             import cdsapi
 
-            url, key = _resolve_credentials(self.config, default_url="https://cds.climate.copernicus.eu/api", default_rc_name=".cdsapirc")
+            url, key = _resolve_credentials(
+                self.config,
+                default_url="https://cds.climate.copernicus.eu/api",
+                default_rc_name=".cdsapirc",
+                fallback_url_envs=("CDSAPI_URL", "ECMWF_DATASTORES_URL"),
+                fallback_key_envs=("CDSAPI_KEY", "ECMWF_DATASTORES_KEY"),
+            )
             kwargs: dict[str, str] = {}
             if url is not None:
                 kwargs["url"] = url
@@ -196,11 +208,12 @@ class CERRADataDownloader:
                 "year": sorted({f"{current.year:04d}" for current in dates}),
                 "month": sorted({f"{current.month:02d}" for current in dates}),
                 "day": [f"{current.day:02d}" for current in dates],
-                "area": self.config.region.bbox.as_cds_area(),
                 "data_format": spec.data_format,
                 "download_format": spec.download_format,
             }
         )
+        if self.config.download.remote_area_subset:
+            request["area"] = self.config.region.bbox.as_cds_area()
         if spec.times:
             request["time"] = spec.times
         return request
@@ -212,9 +225,16 @@ def create_backend(config: AppConfig) -> DataStoreBackend:
     return ECMWFDataStoresBackend(config)
 
 
-def _resolve_credentials(config: AppConfig, *, default_url: str, default_rc_name: str) -> tuple[str | None, str | None]:
-    url = config.cds.url or os.getenv(config.cds.url_env) or default_url
-    key = config.cds.key or os.getenv(config.cds.key_env)
+def _resolve_credentials(
+    config: AppConfig,
+    *,
+    default_url: str,
+    default_rc_name: str,
+    fallback_url_envs: tuple[str, ...] = (),
+    fallback_key_envs: tuple[str, ...] = (),
+) -> tuple[str | None, str | None]:
+    url = config.cds.url or _first_env(config.cds.url_env, *fallback_url_envs) or default_url
+    key = config.cds.key or _first_env(config.cds.key_env, *fallback_key_envs)
     rc_override = os.getenv(config.cds.rc_file_env)
     rc_path = Path(rc_override).expanduser() if rc_override else Path.home() / default_rc_name
 
@@ -223,6 +243,16 @@ def _resolve_credentials(config: AppConfig, *, default_url: str, default_rc_name
             "CDS credentials not found. Set the configured environment variables or provide a protected RC file."
         )
     return url, key
+
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        if not name:
+            continue
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
 
 
 def _request_spec_from_dataset(label: str, dataset: DatasetRequestConfig) -> RequestSpec:

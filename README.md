@@ -142,6 +142,7 @@ Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella direc
 ### Strategia prestazionale
 
 - download e processing a finestre mensili
+- per CERRA il crop remoto via `area` e' disattivato di default; il package scarica il raw file e ritaglia localmente sul bbox configurato
 - riuso della cache locale per richieste identiche
 - checkpoint per finestra completata
 - calcolo FWI sequenziale nel tempo ma vettorizzato nello spazio

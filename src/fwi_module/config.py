@@ -107,7 +107,11 @@ class DatasetsConfig(BaseModel):
     atmosphere: DatasetRequestConfig = Field(
         default_factory=lambda: DatasetRequestConfig(
             collection_id="reanalysis-cerra-single-levels",
-            request_base={"data_type": ["reanalysis"]},
+            request_base={
+                "data_type": ["reanalysis"],
+                "product_type": ["analysis"],
+                "level_type": ["surface_or_atmosphere"],
+            },
             variable_map={
                 "temperature": "2m_temperature",
                 "relative_humidity": "2m_relative_humidity",
@@ -120,7 +124,10 @@ class DatasetsConfig(BaseModel):
     land: DatasetRequestConfig = Field(
         default_factory=lambda: DatasetRequestConfig(
             collection_id="reanalysis-cerra-land",
-            request_base={},
+            request_base={
+                "product_type": ["analysis"],
+                "level_type": ["surface"],
+            },
             variable_map={
                 "precipitation": "total_precipitation",
                 "land_sea_mask": "land_sea_mask",
@@ -149,6 +156,7 @@ class DownloadConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     chunking: Literal["monthly", "quarterly"] = "monthly"
+    remote_area_subset: bool = False
     retry_attempts: int = Field(default=4, ge=1, le=20)
     retry_wait_seconds: int = Field(default=30, ge=1, le=3_600)
 
@@ -294,7 +302,11 @@ def dump_example_config() -> dict[str, Any]:
             "datasets": {
                 "atmosphere": {
                     "collection_id": "reanalysis-cerra-single-levels",
-                    "request_base": {"data_type": ["reanalysis"]},
+                    "request_base": {
+                        "data_type": ["reanalysis"],
+                        "product_type": ["analysis"],
+                        "level_type": ["surface_or_atmosphere"],
+                    },
                     "variable_map": {
                         "temperature": "2m_temperature",
                         "relative_humidity": "2m_relative_humidity",
@@ -306,7 +318,10 @@ def dump_example_config() -> dict[str, Any]:
                 },
                 "land": {
                     "collection_id": "reanalysis-cerra-land",
-                    "request_base": {},
+                    "request_base": {
+                        "product_type": ["analysis"],
+                        "level_type": ["surface"],
+                    },
                     "variable_map": {
                         "precipitation": "total_precipitation",
                         "land_sea_mask": "land_sea_mask",
@@ -316,7 +331,12 @@ def dump_example_config() -> dict[str, Any]:
                     "download_format": "unarchived",
                 },
             },
-            "download": {"chunking": "monthly", "retry_attempts": 4, "retry_wait_seconds": 30},
+            "download": {
+                "chunking": "monthly",
+                "remote_area_subset": False,
+                "retry_attempts": 4,
+                "retry_wait_seconds": 30,
+            },
             "paths": {
                 "cache_dir": "data/cache",
                 "output_dir": "data/output",
