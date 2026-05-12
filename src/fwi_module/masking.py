@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import xarray as xr
 
 from .exceptions import ProcessingError
@@ -12,6 +13,7 @@ def apply_spatial_mask(
     land_sea_mask: xr.DataArray,
     country_name: str,
     land_sea_threshold: float,
+    coastal_buffer_cells: int = 0,
 ) -> xr.Dataset:
     """Mask out non-land and non-Greek cells."""
 
@@ -21,6 +23,7 @@ def apply_spatial_mask(
     land_mask = land_mask >= land_sea_threshold
     country_mask = build_country_mask(dataset, country_name)
     combined_mask = (land_mask.astype(bool) & country_mask.astype(bool)).rename("mask")
+    combined_mask = _expand_mask(combined_mask, coastal_buffer_cells)
 
     masked = dataset.where(combined_mask)
     masked["mask"] = combined_mask.astype("uint8")
@@ -70,3 +73,22 @@ def _find_coord_or_var(dataset: xr.Dataset, names: tuple[str, ...]) -> xr.DataAr
             value = dataset[name]
             return value.isel(time=0, drop=True) if "time" in value.dims else value
     raise ProcessingError(f"dataset is missing coordinate(s): {', '.join(names)}")
+
+
+def _expand_mask(mask: xr.DataArray, cells: int) -> xr.DataArray:
+    if cells <= 0:
+        return mask.astype(bool)
+
+    expanded_values = np.asarray(mask.fillna(False).values, dtype=bool)
+    for _ in range(cells):
+        padded = np.pad(expanded_values, 1, mode="constant", constant_values=False)
+        next_values = expanded_values.copy()
+        for row_shift in (-1, 0, 1):
+            for col_shift in (-1, 0, 1):
+                next_values |= padded[
+                    1 + row_shift : 1 + row_shift + expanded_values.shape[0],
+                    1 + col_shift : 1 + col_shift + expanded_values.shape[1],
+                ]
+        expanded_values = next_values
+
+    return xr.DataArray(expanded_values, coords=mask.coords, dims=mask.dims, name=mask.name)

@@ -49,6 +49,7 @@ def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig
         land_sea_mask,
         config.region.country_name,
         config.processing.land_sea_threshold,
+        config.processing.coastal_buffer_cells,
     )
     return PreparedInputs(dataset=masked, land_mask=masked["mask"])
 

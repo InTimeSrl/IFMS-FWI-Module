@@ -197,6 +197,7 @@ class ProcessingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     land_sea_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    coastal_buffer_cells: int = Field(default=0, ge=0, le=10)
     max_workers: int = Field(default=1, ge=1, le=128)
     resume: bool = True
     fail_on_dataset_gap: bool = True
@@ -352,7 +353,8 @@ def dump_example_config() -> dict[str, Any]:
                 "state_template": "state_{year}{month:02d}{day:02d}.nc",
             },
             "processing": {
-                "land_sea_threshold": 0.5,
+                "land_sea_threshold": 0.0,
+                "coastal_buffer_cells": 1,
                 "max_workers": 1,
                 "resume": True,
                 "fail_on_dataset_gap": True,

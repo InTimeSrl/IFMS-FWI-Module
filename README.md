@@ -89,7 +89,7 @@ Campi principali:
 - `datasets.*`: collezioni CDS, variabili e orari da estrarre
 - `paths.*`: cache, output e database SQLite locale
 - `storage.*`: formato, compressione e naming file
-- `processing.*`: resume, maschera terra/mare, limiti operativi
+- `processing.*`: resume, soglia terra/mare, buffer costiero opzionale, limiti operativi
 
 ### CLI
 
@@ -144,6 +144,11 @@ Se `storage.include_inputs` e' attivo, il file contiene anche gli input meteorol
 - `mask`
 
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
+
+Per aumentare la copertura costiera si possono combinare:
+
+- `processing.land_sea_threshold`: con `0.0` viene tenuto qualunque pixel con una frazione di terra positiva
+- `processing.coastal_buffer_cells`: espande il mask finale di N celle, utile per includere meglio le coste anche prendendo alcuni pixel di mare
 
 Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della griglia Lambert conforme nativa di CERRA, coordinate proiettate `x`/`y` in metri e coordinate geografiche ausiliarie `lat`/`lon`, in modo che strumenti GIS come QGIS possano sovrapporre correttamente il file alla basemap.
 

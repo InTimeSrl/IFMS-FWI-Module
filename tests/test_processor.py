@@ -44,7 +44,7 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(
         "fwi_module.preprocess.apply_spatial_mask",
-        lambda dataset, land_sea_mask, country_name, land_sea_threshold: dataset.assign(
+        lambda dataset, land_sea_mask, country_name, land_sea_threshold, coastal_buffer_cells: dataset.assign(
             mask=((land_sea_mask.isel(time=0, drop=True) >= land_sea_threshold).astype("uint8"))
         ),
     )
