@@ -10,6 +10,7 @@ import xarray as xr
 
 from .config import AppConfig, BoundingBox, DatasetRequestConfig
 from .exceptions import ProcessingError
+from .georeferencing import native_grid_projection_attrs, projected_axis_coordinates, projection_coordinate_attrs
 from .masking import apply_spatial_mask
 
 
@@ -86,13 +87,13 @@ def open_dataset_file(path: Path) -> xr.Dataset:
                 "GRIB support requires the optional dependencies 'cfgrib' and 'eccodes'. Install them with: uv sync --extra grib"
             ) from exc
         with xr.set_options(use_new_combine_kwarg_defaults=True):
-            groups = cfgrib.open_datasets(path, backend_kwargs={"indexpath": ""})
+            groups = cfgrib.open_datasets(path, backend_kwargs={"indexpath": "", "read_keys": ["radius", "shapeOfTheEarth"]})
         prepared_groups = [_standardize_dataset(_drop_auxiliary_grib_coords(group)) for group in groups]
         dataset = xr.merge(prepared_groups, compat="override", join="outer", combine_attrs="drop_conflicts")
     else:
         raise ProcessingError(f"unsupported data file format: {path}")
 
-    return _standardize_dataset(dataset)
+    return _assign_native_projection_coordinates(_standardize_dataset(dataset))
 
 
 def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> xr.Dataset:
@@ -199,6 +200,23 @@ def _assign_time_coordinate(dataset: xr.Dataset, time_values: np.ndarray) -> xr.
     coords = {name: coord for name, coord in dataset.coords.items()}
     coords["time"] = xr.DataArray(time_values, dims=("time",))
     return xr.Dataset(data_vars=expanded, coords=coords, attrs=dataset.attrs)
+
+
+def _assign_native_projection_coordinates(dataset: xr.Dataset) -> xr.Dataset:
+    if not {"x", "y"}.issubset(dataset.dims):
+        return dataset
+    if "x" in dataset.coords and "y" in dataset.coords:
+        return dataset
+
+    projection = native_grid_projection_attrs(dataset)
+    if projection is None:
+        return dataset
+
+    x_values, y_values = projected_axis_coordinates(projection, x_size=dataset.sizes["x"], y_size=dataset.sizes["y"])
+    return dataset.assign_coords(
+        x=xr.DataArray(x_values, dims=("x",), attrs=projection_coordinate_attrs("x")),
+        y=xr.DataArray(y_values, dims=("y",), attrs=projection_coordinate_attrs("y")),
+    )
 
 
 def _extract_lon_lat(dataset: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:

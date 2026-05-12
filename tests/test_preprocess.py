@@ -5,6 +5,7 @@ import xarray as xr
 
 from fwi_module.config import AppConfig, dump_example_config
 from fwi_module.preprocess import (
+    _assign_native_projection_coordinates,
     _drop_auxiliary_grib_coords,
     _standardize_dataset,
     extract_atmosphere_inputs,
@@ -86,3 +87,36 @@ def test_extract_land_inputs_accepts_grib_short_names() -> None:
     assert list(prepared.data_vars) == ["precipitation", "land_sea_mask"]
     np.testing.assert_allclose(prepared["precipitation"].values, 1.0)
     np.testing.assert_allclose(prepared["land_sea_mask"].values, 1.0)
+
+
+def test_assign_native_projection_coordinates_uses_cerra_lambert_grid() -> None:
+    dataset = xr.Dataset(
+        data_vars={"t2m": (("y", "x"), np.zeros((2, 3), dtype=float))},
+        coords={
+            "lat": (("y", "x"), np.array([[20.292281, 20.292281, 20.292281], [20.3418, 20.3418, 20.3418]], dtype=float)),
+            "lon": (("y", "x"), np.array([[-17.485943, -17.4267, -17.3674], [-17.4886, -17.4294, -17.3701]], dtype=float)),
+        },
+    )
+    dataset["t2m"].attrs.update(
+        {
+            "GRIB_gridType": "lambert",
+            "GRIB_radius": 6_371_229,
+            "GRIB_LaDInDegrees": 50.0,
+            "GRIB_Latin1InDegrees": 50.0,
+            "GRIB_Latin2InDegrees": 50.0,
+            "GRIB_LoVInDegrees": 8.0,
+            "GRIB_latitudeOfFirstGridPointInDegrees": 20.292281,
+            "GRIB_longitudeOfFirstGridPointInDegrees": 342.514057,
+            "GRIB_DxInMetres": 5_500.0,
+            "GRIB_DyInMetres": 5_500.0,
+            "GRIB_iScansNegatively": 0,
+            "GRIB_jScansPositively": 1,
+        }
+    )
+
+    projected = _assign_native_projection_coordinates(dataset)
+
+    np.testing.assert_allclose(projected.coords["x"].values, [-2_937_000.0, -2_931_500.0, -2_926_000.0])
+    np.testing.assert_allclose(projected.coords["y"].values, [-2_937_000.0, -2_931_500.0])
+    assert projected.coords["x"].attrs["standard_name"] == "projection_x_coordinate"
+    assert projected.coords["y"].attrs["standard_name"] == "projection_y_coordinate"

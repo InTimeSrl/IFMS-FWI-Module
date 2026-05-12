@@ -73,6 +73,46 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
     assert len(backend.requests) == first_request_count
 
 
+def test_processor_annotates_native_lambert_grid_when_projection_metadata_is_present(tmp_path: Path) -> None:
+    config = AppConfig.model_validate(dump_example_config()).resolved(tmp_path)
+    processor = FWIProcessor(config, backend=FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id))
+
+    dataset = xr.Dataset(
+        data_vars={"fwi": (("time", "y", "x"), np.ones((1, 2, 3), dtype=float))},
+        coords={
+            "time": [np.datetime64("2023-04-01")],
+            "y": [-2_937_000.0, -2_931_500.0],
+            "x": [-2_937_000.0, -2_931_500.0, -2_926_000.0],
+            "lat": (("y", "x"), np.array([[20.292281, 20.292281, 20.292281], [20.3418, 20.3418, 20.3418]], dtype=float)),
+            "lon": (("y", "x"), np.array([[-17.485943, -17.4267, -17.3674], [-17.4886, -17.4294, -17.3701]], dtype=float)),
+        },
+    )
+    dataset["fwi"].attrs.update(
+        {
+            "GRIB_gridType": "lambert",
+            "GRIB_radius": 6_371_229,
+            "GRIB_LaDInDegrees": 50.0,
+            "GRIB_Latin1InDegrees": 50.0,
+            "GRIB_Latin2InDegrees": 50.0,
+            "GRIB_LoVInDegrees": 8.0,
+            "GRIB_latitudeOfFirstGridPointInDegrees": 20.292281,
+            "GRIB_longitudeOfFirstGridPointInDegrees": 342.514057,
+            "GRIB_DxInMetres": 5_500.0,
+            "GRIB_DyInMetres": 5_500.0,
+            "GRIB_iScansNegatively": 0,
+            "GRIB_jScansPositively": 1,
+        }
+    )
+
+    annotated = processor._annotate_output_georeferencing(dataset)
+
+    assert annotated["spatial_ref"].attrs["grid_mapping_name"] == "lambert_conformal_conic"
+    assert annotated["spatial_ref"].attrs["longitude_of_central_meridian"] == 8.0
+    assert annotated["fwi"].attrs["grid_mapping"] == "spatial_ref"
+    assert annotated.coords["x"].attrs["standard_name"] == "projection_x_coordinate"
+    assert annotated.coords["y"].attrs["standard_name"] == "projection_y_coordinate"
+
+
 def _write_fake_dataset(
     collection_id: str,
     request: dict[str, object],

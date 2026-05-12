@@ -145,7 +145,7 @@ Se `storage.include_inputs` e' attivo, il file contiene anche gli input meteorol
 
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
 
-Gli output includono una variabile `spatial_ref` con metadati CF/GDAL e coordinate geografiche ausiliarie `lat`/`lon`, in modo che strumenti GIS come QGIS possano riconoscere il riferimento spaziale del file.
+Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della griglia Lambert conforme nativa di CERRA, coordinate proiettate `x`/`y` in metri e coordinate geografiche ausiliarie `lat`/`lon`, in modo che strumenti GIS come QGIS possano sovrapporre correttamente il file alla basemap.
 
 ### Strategia prestazionale
 

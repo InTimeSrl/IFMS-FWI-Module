@@ -12,6 +12,7 @@ from .cds_client import CERRADataDownloader, DataStoreBackend
 from .checkpointing import CatalogStore, WindowRecord
 from .config import AppConfig
 from .fwi_algorithm import FWIState, compute_fwi_indices
+from .georeferencing import native_grid_projection_attrs, native_lambert_crs, projection_coordinate_attrs
 from .preprocess import PreparedInputs, prepare_fwi_inputs
 from .storage import write_netcdf_atomic
 from .utils import ProcessingWindow, month_windows
@@ -126,20 +127,17 @@ class FWIProcessor:
             return cleaned
 
         annotated = cleaned.copy()
-        geographic_crs = CRS.from_epsg(4326)
-        spatial_ref_attrs = dict(geographic_crs.to_cf())
-        wkt = geographic_crs.to_wkt()
-        spatial_ref_attrs.update(
-            {
-                "long_name": "WGS 84 geographic CRS for auxiliary geolocation coordinates",
-                "spatial_ref": wkt,
-                "crs_wkt": wkt,
-            }
-        )
+        spatial_ref_attrs = self._spatial_ref_attrs(annotated)
         annotated["spatial_ref"] = xr.DataArray(np.int32(0), attrs=spatial_ref_attrs)
         annotated.coords["time"].attrs.setdefault("standard_name", "time") if "time" in annotated.coords else None
         if "time" in annotated.coords:
             annotated.coords["time"].attrs.setdefault("axis", "T")
+        if "x" in annotated.coords:
+            for key, value in projection_coordinate_attrs("x").items():
+                annotated.coords["x"].attrs.setdefault(key, value)
+        if "y" in annotated.coords:
+            for key, value in projection_coordinate_attrs("y").items():
+                annotated.coords["y"].attrs.setdefault(key, value)
 
         for name in annotated.data_vars:
             if name == "spatial_ref":
@@ -151,6 +149,34 @@ class FWIProcessor:
 
         annotated.attrs["Conventions"] = "CF-1.8"
         return annotated
+
+    def _spatial_ref_attrs(self, dataset: xr.Dataset) -> dict[str, object]:
+        projection = native_grid_projection_attrs(dataset)
+        if projection is not None and "x" in dataset.coords and "y" in dataset.coords:
+            native_crs = native_lambert_crs(projection)
+            spatial_ref_attrs = dict(native_crs.to_cf())
+            wkt = native_crs.to_wkt()
+            spatial_ref_attrs.update(
+                {
+                    "projected_crs_name": "CERRA native Lambert conformal grid",
+                    "long_name": "CERRA native Lambert conformal grid",
+                    "spatial_ref": wkt,
+                    "crs_wkt": wkt,
+                }
+            )
+            return spatial_ref_attrs
+
+        geographic_crs = CRS.from_epsg(4326)
+        spatial_ref_attrs = dict(geographic_crs.to_cf())
+        wkt = geographic_crs.to_wkt()
+        spatial_ref_attrs.update(
+            {
+                "long_name": "WGS 84 geographic CRS for auxiliary geolocation coordinates",
+                "spatial_ref": wkt,
+                "crs_wkt": wkt,
+            }
+        )
+        return spatial_ref_attrs
 
     def _trim_to_requested_period(self, dataset: xr.Dataset) -> xr.Dataset:
         if "time" not in dataset.coords:

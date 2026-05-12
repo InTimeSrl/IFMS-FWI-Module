@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 chat.md
+*.nc
+*.grib
+*.xml
+*.sqlite
