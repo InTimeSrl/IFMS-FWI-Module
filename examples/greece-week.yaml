@@ -72,7 +72,8 @@ storage:
   state_template: state_{year}{month:02d}{day:02d}.nc
 
 processing:
-  land_sea_threshold: 0.5
+  land_sea_threshold: 0.0
+  coastal_buffer_cells: 1
   max_workers: 1
   resume: true
   fail_on_dataset_gap: true

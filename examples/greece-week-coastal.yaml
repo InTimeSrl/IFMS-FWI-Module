@@ -8,8 +8,8 @@ region:
 
 period:
   start: 2023-04-01
-  end: 2023-09-30
-  spinup_days: 90
+  end: 2023-04-07
+  spinup_days: 0
 
 cds:
   client: ecmwf_datastores
@@ -59,9 +59,9 @@ download:
 
 paths:
   cache_dir: data/cache
-  output_dir: data/output
-  state_dir: data/state
-  catalog_db: data/state/catalog.sqlite
+  output_dir: week-output-coastal
+  state_dir: week-state-coastal
+  catalog_db: week-state-coastal/catalog.sqlite
 
 storage:
   format: netcdf4
