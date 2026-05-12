@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .cds_client import CERRADataDownloader
 from .checkpointing import CatalogStore
-from .config import load_config
+from .config import AppConfig, load_config
 from .exceptions import ConfigError, FWIError
 from .utils import ProcessingWindow, month_windows
 
@@ -33,10 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Run the processing pipeline")
     run_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+    run_parser.add_argument("--start", type=str, help="Override the processing start date (YYYY-MM-DD)")
+    run_parser.add_argument("--end", type=str, help="Override the processing end date (YYYY-MM-DD)")
     run_parser.add_argument("--no-resume", action="store_true", help="Disable resume even if configured")
 
     resume_parser = subparsers.add_parser("resume", help="Resume the processing pipeline")
     resume_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+    resume_parser.add_argument("--start", type=str, help="Override the processing start date (YYYY-MM-DD)")
+    resume_parser.add_argument("--end", type=str, help="Override the processing end date (YYYY-MM-DD)")
 
     return parser
 
@@ -61,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command in {"run", "resume"}:
             config = load_config(args.config)
+            config = _override_processing_period(config, start=args.start, end=args.end)
             from .processor import FWIProcessor
 
             processor = FWIProcessor(config)
@@ -140,3 +145,21 @@ def _probe_window(config, *, start: str | None, end: str | None) -> ProcessingWi
     if not windows:
         raise ConfigError("configuration period does not contain any monthly processing window")
     return windows[0]
+
+
+def _override_processing_period(config: AppConfig, *, start: str | None, end: str | None) -> AppConfig:
+    if start is None and end is None:
+        return config
+    if bool(start) != bool(end):
+        raise ConfigError("run/resume requires both --start and --end when overriding the processing period")
+
+    try:
+        override_start = date.fromisoformat(start)
+        override_end = date.fromisoformat(end)
+    except ValueError as exc:
+        raise ConfigError("invalid ISO date passed to run/resume") from exc
+
+    raw = config.model_dump(mode="python")
+    raw["period"]["start"] = override_start
+    raw["period"]["end"] = override_end
+    return AppConfig.model_validate(raw)

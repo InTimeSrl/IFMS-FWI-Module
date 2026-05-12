@@ -105,6 +105,12 @@ Esecuzione pipeline:
 uv run fwi-module run examples/greece.yaml
 ```
 
+Esecuzione su una sottofinestra temporale senza modificare il file YAML:
+
+```powershell
+uv run fwi-module run examples/greece.yaml --start 2023-04-01 --end 2023-04-07 --no-resume
+```
+
 Ripresa di un job interrotto:
 
 ```powershell
@@ -138,6 +144,8 @@ Se `storage.include_inputs` e' attivo, il file contiene anche gli input meteorol
 - `mask`
 
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
+
+Gli output includono una variabile `spatial_ref` con metadati CF/GDAL e coordinate geografiche ausiliarie `lat`/`lon`, in modo che strumenti GIS come QGIS possano riconoscere il riferimento spaziale del file.
 
 ### Strategia prestazionale
 

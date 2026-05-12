@@ -240,7 +240,8 @@ def initial_spread_index(ffmc: np.ndarray, wind_speed: np.ndarray) -> np.ndarray
 
 def buildup_index(dmc: np.ndarray, dc: np.ndarray) -> np.ndarray:
     bui1 = np.where((dmc == 0.0) & (dc == 0.0), 0.0, 0.8 * dc * dmc / np.maximum(dmc + 0.4 * dc, 1e-12))
-    p = np.where(dmc == 0.0, 0.0, (dmc - bui1) / dmc)
+    safe_dmc = np.where(dmc == 0.0, 1.0, dmc)
+    p = np.where(dmc == 0.0, 0.0, (dmc - bui1) / safe_dmc)
     cc = 0.92 + (0.0114 * dmc) ** 1.7
     bui0 = np.maximum(dmc - cc * p, 0.0)
     return np.where(bui1 < dmc, bui0, bui1)
@@ -252,7 +253,9 @@ def fire_weather_index(isi: np.ndarray, bui: np.ndarray) -> np.ndarray:
         0.1 * isi * (1000.0 / (25.0 + 108.64 / np.exp(0.023 * bui))),
         0.1 * isi * (0.626 * (bui**0.809) + 2.0),
     )
-    return np.where(bb <= 1.0, bb, np.exp(2.72 * ((0.434 * np.log(bb)) ** 0.647)))
+    safe_bb = np.maximum(bb, 1e-12)
+    log_term = np.where(bb <= 1.0, 0.0, np.log(safe_bb))
+    return np.where(bb <= 1.0, bb, np.exp(2.72 * ((0.434 * log_term) ** 0.647)))
 
 
 def daily_severity_rating(fwi: np.ndarray) -> np.ndarray:
@@ -262,10 +265,11 @@ def daily_severity_rating(fwi: np.ndarray) -> np.ndarray:
 def _dmc_post_rain(previous_dmc: np.ndarray, precipitation: np.ndarray) -> np.ndarray:
     net_rain = 0.92 * precipitation - 1.27
     initial_moisture = 20.0 + 280.0 / np.exp(0.023 * previous_dmc)
+    safe_previous_dmc = np.maximum(previous_dmc, 1e-12)
     b = np.where(
         previous_dmc <= 33.0,
         100.0 / (0.5 + 0.3 * previous_dmc),
-        np.where(previous_dmc <= 65.0, 14.0 - 1.3 * np.log(previous_dmc), 6.2 * np.log(previous_dmc) - 17.2),
+        np.where(previous_dmc <= 65.0, 14.0 - 1.3 * np.log(safe_previous_dmc), 6.2 * np.log(safe_previous_dmc) - 17.2),
     )
     moisture_after_rain = initial_moisture + 1000.0 * net_rain / (48.77 + b * net_rain)
     return 43.43 * (5.6348 - np.log(np.maximum(moisture_after_rain - 20.0, 1e-12)))

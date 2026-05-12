@@ -33,17 +33,19 @@ def build_country_mask(dataset: xr.Dataset, country_name: str) -> xr.DataArray:
     import regionmask
 
     lon, lat = _extract_lon_lat(dataset)
-    countries = regionmask.defined_regions.natural_earth_v5_0_0.countries_50
+    natural_earth = getattr(regionmask.defined_regions, "natural_earth_v5_1_2", regionmask.defined_regions.natural_earth_v5_0_0)
+    countries = natural_earth.countries_50
 
     try:
         region_index = countries.names.index(country_name)
     except ValueError as exc:
         raise ProcessingError(f"country not found in Natural Earth regions: {country_name}") from exc
 
-    mask = countries.mask_3D(lon=lon, lat=lat)
+    mask = countries.mask_3D(lon, lat, drop=False)
     country_mask = mask.isel(region=region_index)
-    if "region" in country_mask.coords:
-        country_mask = country_mask.drop_vars("region")
+    extra_coords = [name for name in ("region", "abbrevs", "names") if name in country_mask.coords]
+    if extra_coords:
+        country_mask = country_mask.drop_vars(extra_coords)
     return country_mask.fillna(False).astype(bool).rename("country_mask")
 
 

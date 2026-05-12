@@ -18,6 +18,14 @@ def test_probe_cds_requires_both_window_dates(tmp_path: Path) -> None:
     assert exit_code == 2
 
 
+def test_run_requires_both_override_dates(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+
+    exit_code = main(["run", str(config_path), "--start", "2023-04-01", "--no-resume"])
+
+    assert exit_code == 2
+
+
 def test_probe_cds_download_uses_first_month_when_no_dates(tmp_path: Path, monkeypatch, capsys) -> None:
     config_path = _write_config(tmp_path)
     state: dict[str, object] = {}
@@ -87,6 +95,31 @@ def test_cdsapi_env_fallback_is_accepted(tmp_path: Path, monkeypatch) -> None:
     exit_code = main(["probe-cds", str(config_path)])
 
     assert exit_code == 0
+
+
+def test_run_period_override_is_passed_to_processor(tmp_path: Path, monkeypatch) -> None:
+    import fwi_module.processor as processor_module
+
+    config_path = _write_config(tmp_path)
+    state: dict[str, object] = {}
+
+    class FakeProcessor:
+        def __init__(self, config) -> None:
+            state["start"] = config.period.start.isoformat()
+            state["end"] = config.period.end.isoformat()
+
+        def run(self, *, resume: bool | None = None):
+            state["resume"] = resume
+            return []
+
+    monkeypatch.setattr(processor_module, "FWIProcessor", FakeProcessor)
+
+    exit_code = main(["run", str(config_path), "--start", "2023-04-02", "--end", "2023-04-07", "--no-resume"])
+
+    assert exit_code == 0
+    assert state["start"] == "2023-04-02"
+    assert state["end"] == "2023-04-07"
+    assert state["resume"] is False
 
 
 def _write_config(tmp_path: Path, *, client: str = "ecmwf_datastores") -> Path:

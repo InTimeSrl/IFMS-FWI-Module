@@ -13,6 +13,15 @@ from .exceptions import ProcessingError
 from .masking import apply_spatial_mask
 
 
+VARIABLE_NAME_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("2m_temperature", "t2m"),
+    ("2m_relative_humidity", "r2"),
+    ("10m_wind_speed", "si10"),
+    ("total_precipitation", "tp"),
+    ("land_sea_mask", "lsm"),
+)
+
+
 @dataclass(slots=True)
 class PreparedInputs:
     dataset: xr.Dataset
@@ -71,12 +80,15 @@ def open_dataset_file(path: Path) -> xr.Dataset:
         dataset = xr.open_dataset(path)
     elif suffix in {".grib", ".grib2", ".grb"}:
         try:
-            import cfgrib  # noqa: F401
+            import cfgrib
         except ImportError as exc:
             raise ProcessingError(
                 "GRIB support requires the optional dependencies 'cfgrib' and 'eccodes'. Install them with: uv sync --extra grib"
             ) from exc
-        dataset = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
+        with xr.set_options(use_new_combine_kwarg_defaults=True):
+            groups = cfgrib.open_datasets(path, backend_kwargs={"indexpath": ""})
+        prepared_groups = [_standardize_dataset(_drop_auxiliary_grib_coords(group)) for group in groups]
+        dataset = xr.merge(prepared_groups, compat="override", join="outer", combine_attrs="drop_conflicts")
     else:
         raise ProcessingError(f"unsupported data file format: {path}")
 
@@ -84,8 +96,8 @@ def open_dataset_file(path: Path) -> xr.Dataset:
 
 
 def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> xr.Dataset:
-    variable_map = request.variable_map
-    subset = _subset_variables(dataset, variable_map)
+    variable_map = _resolve_variable_map(dataset, request.variable_map)
+    subset = dataset[list(dict.fromkeys(variable_map.values()))]
     subset = _select_requested_times(subset, request.times)
     subset = subset.rename({variable_map["temperature"]: "temperature", variable_map["relative_humidity"]: "relative_humidity", variable_map["wind_speed"]: "wind_speed"})
     subset["temperature"] = _convert_temperature(subset["temperature"])
@@ -95,19 +107,35 @@ def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig
 
 
 def extract_land_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> xr.Dataset:
-    variable_map = request.variable_map
-    subset = _subset_variables(dataset, variable_map)
+    variable_map = _resolve_variable_map(dataset, request.variable_map)
+    subset = dataset[list(dict.fromkeys(variable_map.values()))]
     subset = _select_requested_times(subset, request.times)
     renamed = subset.rename({variable_map["precipitation"]: "precipitation", variable_map["land_sea_mask"]: "land_sea_mask"})
     renamed["precipitation"] = _convert_precipitation(renamed["precipitation"])
     return renamed[["precipitation", "land_sea_mask"]].load()
 
 
-def _subset_variables(dataset: xr.Dataset, variable_map: dict[str, str]) -> xr.Dataset:
-    missing = [source_name for source_name in variable_map.values() if source_name not in dataset.data_vars]
+def _resolve_variable_map(dataset: xr.Dataset, variable_map: dict[str, str]) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+
+    for logical_name, source_name in variable_map.items():
+        actual_name = next((candidate for candidate in _candidate_variable_names(source_name) if candidate in dataset.data_vars), None)
+        if actual_name is None:
+            missing.append(source_name)
+            continue
+        resolved[logical_name] = actual_name
+
     if missing:
         raise ProcessingError(f"dataset is missing variables: {', '.join(sorted(missing))}")
-    return dataset[list(variable_map.values())]
+    return resolved
+
+
+def _candidate_variable_names(source_name: str) -> tuple[str, ...]:
+    for group in VARIABLE_NAME_GROUPS:
+        if source_name in group:
+            return group
+    return (source_name,)
 
 
 def _select_requested_times(dataset: xr.Dataset, requested_times: list[str]) -> xr.Dataset:
@@ -129,15 +157,48 @@ def _select_requested_times(dataset: xr.Dataset, requested_times: list[str]) -> 
 
 def _standardize_dataset(dataset: xr.Dataset) -> xr.Dataset:
     rename_map: dict[str, str] = {}
-    if "valid_time" in dataset.coords and "time" not in dataset.coords:
-        rename_map["valid_time"] = "time"
     if "latitude" in dataset.coords and "lat" not in dataset.coords:
         rename_map["latitude"] = "lat"
     if "longitude" in dataset.coords and "lon" not in dataset.coords:
         rename_map["longitude"] = "lon"
     if rename_map:
         dataset = dataset.rename(rename_map)
-    return dataset.sortby("time") if "time" in dataset.coords else dataset
+
+    time_values = _extract_time_values(dataset)
+    dataset = _drop_scalar_coords(dataset, {"time", "valid_time", "step"})
+    if time_values is not None:
+        dataset = _assign_time_coordinate(dataset, time_values)
+        return dataset.sortby("time")
+    return dataset
+
+
+def _drop_auxiliary_grib_coords(dataset: xr.Dataset) -> xr.Dataset:
+    keep = {"time", "valid_time", "latitude", "longitude", "lat", "lon"}
+    to_drop = [name for name in dataset.coords if name not in keep and name not in dataset.dims]
+    return dataset.drop_vars(to_drop) if to_drop else dataset
+
+
+def _extract_time_values(dataset: xr.Dataset) -> np.ndarray | None:
+    for coord_name in ("valid_time", "time"):
+        if coord_name in dataset.coords:
+            values = np.asarray(dataset.coords[coord_name].values, dtype="datetime64[ns]")
+            return values.reshape(1) if values.ndim == 0 else values.reshape(-1)
+    return None
+
+
+def _drop_scalar_coords(dataset: xr.Dataset, coord_names: set[str]) -> xr.Dataset:
+    to_drop = [name for name in coord_names if name in dataset.coords and name not in dataset.dims]
+    return dataset.drop_vars(to_drop) if to_drop else dataset
+
+
+def _assign_time_coordinate(dataset: xr.Dataset, time_values: np.ndarray) -> xr.Dataset:
+    if "time" in dataset.dims:
+        return dataset.assign_coords(time=("time", time_values))
+
+    expanded = {name: data_array.expand_dims(time=time_values) for name, data_array in dataset.data_vars.items()}
+    coords = {name: coord for name, coord in dataset.coords.items()}
+    coords["time"] = xr.DataArray(time_values, dims=("time",))
+    return xr.Dataset(data_vars=expanded, coords=coords, attrs=dataset.attrs)
 
 
 def _extract_lon_lat(dataset: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:

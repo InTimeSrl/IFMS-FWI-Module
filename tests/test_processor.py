@@ -59,6 +59,14 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
     assert all(path.exists() for path in outputs)
     assert first_request_count == 4
 
+    with xr.open_dataset(outputs[0]) as dataset:
+        assert dataset.attrs["Conventions"] == "CF-1.8"
+        assert "spatial_ref" in dataset.data_vars
+        assert dataset["spatial_ref"].attrs["grid_mapping_name"] == "latitude_longitude"
+        assert dataset["fwi"].attrs["grid_mapping"] == "spatial_ref"
+        assert "abbrevs" not in dataset.coords
+        assert "names" not in dataset.coords
+
     resumed_outputs = FWIProcessor(config, backend=backend).run(resume=True)
 
     assert resumed_outputs == []

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
+from pyproj import CRS
 
 from .cds_client import CERRADataDownloader, DataStoreBackend
 from .checkpointing import CatalogStore, WindowRecord
@@ -114,8 +115,42 @@ class FWIProcessor:
     def _compose_output_dataset(self, prepared: PreparedInputs, fwi_outputs: xr.Dataset) -> xr.Dataset:
         if self.config.storage.include_inputs:
             meteorology = prepared.dataset[["temperature", "relative_humidity", "wind_speed", "precipitation", "mask"]]
-            return xr.merge([meteorology, fwi_outputs], compat="override", join="inner")
-        return xr.merge([prepared.dataset[["mask"]], fwi_outputs], compat="override", join="inner")
+            output = xr.merge([meteorology, fwi_outputs], compat="override", join="inner")
+        else:
+            output = xr.merge([prepared.dataset[["mask"]], fwi_outputs], compat="override", join="inner")
+        return self._annotate_output_georeferencing(output)
+
+    def _annotate_output_georeferencing(self, dataset: xr.Dataset) -> xr.Dataset:
+        cleaned = dataset.drop_vars(["region", "abbrevs", "names"], errors="ignore")
+        if "lat" not in cleaned.coords or "lon" not in cleaned.coords:
+            return cleaned
+
+        annotated = cleaned.copy()
+        geographic_crs = CRS.from_epsg(4326)
+        spatial_ref_attrs = dict(geographic_crs.to_cf())
+        wkt = geographic_crs.to_wkt()
+        spatial_ref_attrs.update(
+            {
+                "long_name": "WGS 84 geographic CRS for auxiliary geolocation coordinates",
+                "spatial_ref": wkt,
+                "crs_wkt": wkt,
+            }
+        )
+        annotated["spatial_ref"] = xr.DataArray(np.int32(0), attrs=spatial_ref_attrs)
+        annotated.coords["time"].attrs.setdefault("standard_name", "time") if "time" in annotated.coords else None
+        if "time" in annotated.coords:
+            annotated.coords["time"].attrs.setdefault("axis", "T")
+
+        for name in annotated.data_vars:
+            if name == "spatial_ref":
+                continue
+            variable_attrs = dict(annotated[name].attrs)
+            variable_attrs["coordinates"] = "lat lon"
+            variable_attrs["grid_mapping"] = "spatial_ref"
+            annotated[name].attrs = variable_attrs
+
+        annotated.attrs["Conventions"] = "CF-1.8"
+        return annotated
 
     def _trim_to_requested_period(self, dataset: xr.Dataset) -> xr.Dataset:
         if "time" not in dataset.coords:
