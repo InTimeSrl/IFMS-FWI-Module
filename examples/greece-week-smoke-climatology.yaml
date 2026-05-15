@@ -1,0 +1,95 @@
+region:
+  bbox:
+    north: 41.9
+    west: 19.0
+    south: 34.5
+    east: 29.7
+  country_name: Greece
+period:
+  start: 2023-04-01
+  end: 2023-04-07
+  spinup_days: 0
+cds:
+  client: ecmwf_datastores
+  url_env: ECMWF_DATASTORES_URL
+  key_env: ECMWF_DATASTORES_KEY
+  rc_file_env: ECMWF_DATASTORES_RC_FILE
+  timeout_seconds: 600
+datasets:
+  atmosphere:
+    collection_id: reanalysis-cerra-single-levels
+    request_base:
+      data_type:
+      - reanalysis
+      product_type:
+      - analysis
+      level_type:
+      - surface_or_atmosphere
+    variable_map:
+      temperature: 2m_temperature
+      relative_humidity: 2m_relative_humidity
+      wind_speed: 10m_wind_speed
+    times:
+    - '12:00'
+    data_format: grib
+    download_format: unarchived
+  land:
+    collection_id: reanalysis-cerra-land
+    request_base:
+      product_type:
+      - analysis
+      level_type:
+      - surface
+    variable_map:
+      precipitation: total_precipitation
+      land_sea_mask: land_sea_mask
+    times:
+    - 06:00
+    data_format: grib
+    download_format: unarchived
+download:
+  chunking: monthly
+  remote_area_subset: false
+  retry_attempts: 4
+  retry_wait_seconds: 30
+paths:
+  cache_dir: data/cache
+  output_dir: smoke-output-climatology
+  state_dir: smoke-state-climatology
+  catalog_db: smoke-state-climatology/catalog.sqlite
+storage:
+  format: netcdf4
+  compression_level: 4
+  chunk_shape:
+  - 1
+  - 128
+  - 128
+  include_inputs: false
+  intermediate_output: climatology
+  filename_template: fwi_{year}{month:02d}.nc
+  state_template: state_{year}{month:02d}{day:02d}.nc
+processing:
+  land_sea_threshold: 0.0
+  coastal_buffer_cells: 1
+  max_workers: 1
+  resume: true
+  fail_on_dataset_gap: true
+initial_state:
+  ffmc: 85.0
+  dmc: 6.0
+  dc: 15.0
+percentile:
+  start_year: 1991
+  end_year: 2020
+  months:
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  percentile: 90.0
+  method: exact
+  block_shape:
+  - 128
+  - 128
+  output_template: fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc
