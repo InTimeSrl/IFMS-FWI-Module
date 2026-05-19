@@ -52,6 +52,8 @@ datasets:
     download_format: unarchived
 
 download:
+  # `yearly` raggruppa le richieste CDS per anno di calendario; nel workflow percentile
+  # e' supportato solo con `percentile.months` contigui e mantiene output/checkpoint mensili.
   chunking: monthly
   remote_area_subset: false
   retry_attempts: 4

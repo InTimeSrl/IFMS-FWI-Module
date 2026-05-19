@@ -86,6 +86,7 @@ Campi principali:
 - `region.bbox`: bounding box `[north, west, south, east]`
 - `period.start`, `period.end`: periodo richiesto
 - `period.spinup_days`: giorni extra prima dell'inizio per stabilizzare FFMC, DMC e DC
+- `download.chunking`: strategia di raggruppamento delle richieste CDS (`monthly` o `yearly`)
 - `datasets.*`: collezioni CDS, variabili e orari da estrarre
 - `paths.*`: cache, output e database SQLite locale
 - `storage.*`: formato, compressione e naming file
@@ -93,6 +94,26 @@ Campi principali:
 - `storage.intermediate_output`: `full` per mantenere gli intermedi correnti, `climatology` per salvare solo `fwi` e `mask` negli output mensili
 - `processing.*`: resume, soglia terra/mare, buffer costiero opzionale, limiti operativi
 - `percentile.*`: baseline multiannuale per il prodotto finale P90, mesi da includere, percentile richiesto, blocchi spaziali e naming dell'output finale
+
+Uso di `download.chunking`:
+
+- `monthly`: comportamento storico; ogni finestra mensile di processing genera una richiesta CDS dedicata
+- `yearly`: raggruppa il download per anno di calendario, ma mantiene processing, checkpoint e output su base mensile
+- con `yearly` il riuso della cache aumenta: tutte le finestre mensili dello stesso anno condividono lo stesso GRIB/NetCDF scaricato per dataset
+- con `run` e `resume`, il calcolo resta limitato a `period.start` e `period.end`; per mantenere una singola richiesta annuale, il download puo' includere anche i mesi di bordo completi dell'anno interessato
+- con `run-percentile`, `yearly` limita ogni richiesta annuale ai mesi definiti in `percentile.months`, sempre all'interno del singolo anno di baseline
+- con `run-percentile`, `yearly` richiede che `percentile.months` definisca un intervallo contiguo, ad esempio `[5, 6, 7, 8, 9]`; configurazioni come `[5, 7, 9]` non sono supportate in questa modalita'
+- con `run-percentile` e `yearly`, lo `spinup_days` della lavorazione annuale viene azzerato per non allargare il download oltre i mesi stagionali richiesti; se serve mantenere uno spinup precedente al primo mese selezionato, usare `monthly`
+
+Esempio di configurazione per `yearly`:
+
+```yaml
+download:
+	chunking: yearly
+	remote_area_subset: false
+	retry_attempts: 4
+	retry_wait_seconds: 30
+```
 
 Sezione `logging` consigliata:
 
@@ -200,12 +221,14 @@ Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della grig
 
 ### Strategia prestazionale
 
-- download e processing a finestre mensili
+- `monthly`: download e processing a finestre mensili
+- `yearly`: download raggruppato per anno di calendario, processing e output ancora mensili
 - per CERRA il crop remoto via `area` e' disattivato di default; il package scarica il raw file e ritaglia localmente sul bbox configurato
 - riuso della cache locale per richieste identiche
+- con `yearly` piu' finestre mensili dello stesso anno riusano la stessa entry di cache per dataset
 - checkpoint per finestra completata
 - calcolo FWI sequenziale nel tempo ma vettorizzato nello spazio
-- per il prodotto multiyear P90 il processing viene eseguito stagione per stagione e anno per anno, con cataloghi di resume separati per annualita'
+- per il prodotto multiyear P90 il processing viene eseguito stagione per stagione e anno per anno, con cataloghi di resume separati per annualita'; se `download.chunking: yearly`, ogni annualita' scarica una sola volta per dataset e limita la richiesta ai mesi configurati in `percentile.months`
 - l'aggregazione finale legge solo blocchi spaziali 2D della variabile `fwi` dai NetCDF mensili, evitando di materializzare in RAM tutta la serie 20/30 anni
 - per run climatologici lunghi su PC con 16GB di RAM e' consigliato impostare `storage.intermediate_output: climatology`; in questo modo gli intermedi mensili salvano solo `fwi` e `mask`, riducendo I/O e spazio disco senza cambiare la logica del percentile finale
 
