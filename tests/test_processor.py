@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from fwi_module.cds_client import DataStoreBackend
@@ -87,6 +89,107 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
 
     assert resumed_outputs == []
     assert len(backend.requests) == first_request_count
+
+
+def test_processor_reuses_yearly_downloads_across_monthly_windows(tmp_path: Path, monkeypatch) -> None:
+    raw = dump_example_config()
+    raw["period"] = {"start": "2023-04-01", "end": "2023-05-05", "spinup_days": 0}
+    raw["download"]["chunking"] = "yearly"
+    raw["paths"] = {
+        "cache_dir": str(tmp_path / "cache"),
+        "output_dir": str(tmp_path / "output"),
+        "state_dir": str(tmp_path / "state"),
+        "catalog_db": str(tmp_path / "state" / "catalog.sqlite"),
+    }
+    raw["datasets"]["atmosphere"]["data_format"] = "netcdf"
+    raw["datasets"]["land"]["data_format"] = "netcdf"
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+
+    monkeypatch.setattr(
+        "fwi_module.preprocess.apply_spatial_mask",
+        lambda dataset, land_sea_mask, country_name, land_sea_threshold, coastal_buffer_cells: dataset.assign(
+            mask=((land_sea_mask.isel(time=0, drop=True) >= land_sea_threshold).astype("uint8"))
+        ),
+    )
+
+    backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
+    outputs = FWIProcessor(config, backend=backend).run(resume=False)
+
+    assert len(outputs) == 2
+    assert len(backend.requests) == 2
+    atmosphere_request = next(
+        request for collection_id, request, _ in backend.requests if collection_id == config.datasets.atmosphere.collection_id
+    )
+    assert atmosphere_request["year"] == ["2023"]
+    assert atmosphere_request["month"] == ["04", "05"]
+    assert atmosphere_request["day"] == [f"{day:02d}" for day in range(1, 31)]
+
+
+def test_run_percentile_product_with_yearly_chunking_reuses_one_download_per_dataset_and_year(
+    tmp_path: Path, monkeypatch
+) -> None:
+    raw = dump_example_config()
+    raw["period"] = {"start": "2023-05-01", "end": "2023-06-30", "spinup_days": 90}
+    raw["download"]["chunking"] = "yearly"
+    raw["paths"] = {
+        "cache_dir": str(tmp_path / "cache"),
+        "output_dir": str(tmp_path / "output"),
+        "state_dir": str(tmp_path / "state"),
+        "catalog_db": str(tmp_path / "state" / "catalog.sqlite"),
+    }
+    raw["datasets"]["atmosphere"]["data_format"] = "netcdf"
+    raw["datasets"]["land"]["data_format"] = "netcdf"
+    raw["storage"]["intermediate_output"] = "climatology"
+    raw["percentile"] = {
+        "start_year": 2020,
+        "end_year": 2021,
+        "months": [5, 6],
+        "percentile": 90.0,
+        "method": "exact",
+        "block_shape": [1, 1],
+        "output_template": "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc",
+    }
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+
+    monkeypatch.setattr(
+        "fwi_module.preprocess.apply_spatial_mask",
+        lambda dataset, land_sea_mask, country_name, land_sea_threshold, coastal_buffer_cells: dataset.assign(
+            mask=((land_sea_mask.isel(time=0, drop=True) >= land_sea_threshold).astype("uint8"))
+        ),
+    )
+
+    backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
+    output_path = FWIProcessor(config, backend=backend).run_percentile_product(resume=False)
+
+    assert output_path.exists()
+    assert len(backend.requests) == 4
+    assert all(request["month"] == ["05", "06"] for _, request, _ in backend.requests)
+    assert (config.paths.output_dir / config.storage.filename_template.format(year=2020, month=5)).exists()
+    assert (config.paths.output_dir / config.storage.filename_template.format(year=2020, month=6)).exists()
+    assert not (config.paths.output_dir / config.storage.filename_template.format(year=2020, month=4)).exists()
+
+
+def test_run_percentile_product_rejects_non_contiguous_months_for_yearly_chunking(tmp_path: Path) -> None:
+    raw = dump_example_config()
+    raw["download"]["chunking"] = "yearly"
+    raw["percentile"] = {
+        "start_year": 2020,
+        "end_year": 2021,
+        "months": [5, 7],
+        "percentile": 90.0,
+        "method": "exact",
+        "block_shape": [1, 1],
+        "output_template": "fwi_p{percentile:.0f}_{start_year}_{end_year}_{months}.nc",
+    }
+    config = AppConfig.model_validate(raw).resolved(tmp_path)
+
+    processor = FWIProcessor(
+        config,
+        backend=FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id),
+    )
+
+    with pytest.raises(Exception, match="contiguous month range"):
+        processor.run_percentile_product(resume=False)
 
 
 def test_processor_writes_climatology_intermediate_outputs(tmp_path: Path, monkeypatch) -> None:
@@ -302,11 +405,8 @@ def _write_fake_dataset(
     land_collection: str,
 ) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    days = [int(day) for day in request["day"]]
-    month = int(request["month"][0])
-    year = int(request["year"][0])
     time_values = request.get("time", ["00:00"])
-    timestamps = [np.datetime64(f"{year:04d}-{month:02d}-{day:02d}T{hour}") for day in days for hour in time_values]
+    timestamps = _request_timestamps(request, time_values)
     lat = xr.DataArray(np.array([[39.0, 39.2], [38.8, 39.1]]), dims=("y", "x"))
     lon = xr.DataArray(np.array([[22.0, 22.2], [22.1, 22.3]]), dims=("y", "x"))
 
@@ -337,6 +437,19 @@ def _write_fake_dataset(
         raise AssertionError(f"unexpected collection: {collection_id}")
 
     dataset.to_netcdf(target_path)
+
+
+def _request_timestamps(request: dict[str, object], time_values: list[str]) -> list[np.datetime64]:
+    timestamps: list[np.datetime64] = []
+    for year_value in sorted({int(value) for value in request["year"]}):
+        for month_value in sorted({int(value) for value in request["month"]}):
+            last_day = monthrange(year_value, month_value)[1]
+            for day_value in sorted({int(value) for value in request["day"]}):
+                if day_value > last_day:
+                    continue
+                for hour in time_values:
+                    timestamps.append(np.datetime64(f"{year_value:04d}-{month_value:02d}-{day_value:02d}T{hour}"))
+    return timestamps
 
 
 def _write_monthly_fwi_output(path: Path, year: int, month: int, values: np.ndarray) -> None:

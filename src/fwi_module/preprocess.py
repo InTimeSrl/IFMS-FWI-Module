@@ -13,6 +13,7 @@ from .config import AppConfig, BoundingBox, DatasetRequestConfig
 from .exceptions import ProcessingError
 from .georeferencing import native_grid_projection_attrs, projected_axis_coordinates, projection_coordinate_attrs
 from .masking import apply_spatial_mask
+from .utils import ProcessingWindow
 
 
 logger = logging.getLogger(__name__)
@@ -33,15 +34,21 @@ class PreparedInputs:
     land_mask: xr.DataArray
 
 
-def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig) -> PreparedInputs:
+def prepare_fwi_inputs(
+    atmosphere_path: Path,
+    land_path: Path,
+    config: AppConfig,
+    *,
+    window: ProcessingWindow | None = None,
+) -> PreparedInputs:
     """Load raw files and turn them into daily FWI inputs."""
 
     logger.info("Preparing FWI inputs from atmosphere=%s and land=%s", atmosphere_path, land_path)
     atmosphere_raw = open_dataset_file(atmosphere_path)
     land_raw = open_dataset_file(land_path)
     try:
-        atmosphere = extract_atmosphere_inputs(atmosphere_raw, config.datasets.atmosphere)
-        land = extract_land_inputs(land_raw, config.datasets.land)
+        atmosphere = extract_atmosphere_inputs(atmosphere_raw, config.datasets.atmosphere, window=window)
+        land = extract_land_inputs(land_raw, config.datasets.land, window=window)
     finally:
         atmosphere_raw.close()
         land_raw.close()
@@ -118,10 +125,16 @@ def open_dataset_file(path: Path) -> xr.Dataset:
     return _assign_native_projection_coordinates(_standardize_dataset(dataset))
 
 
-def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> xr.Dataset:
+def extract_atmosphere_inputs(
+    dataset: xr.Dataset,
+    request: DatasetRequestConfig,
+    *,
+    window: ProcessingWindow | None = None,
+) -> xr.Dataset:
     variable_map = _resolve_variable_map(dataset, request.variable_map)
     subset = dataset[list(dict.fromkeys(variable_map.values()))]
     subset = _select_requested_times(subset, request.times)
+    subset = _select_time_window(subset, window)
     subset = subset.rename({variable_map["temperature"]: "temperature", variable_map["relative_humidity"]: "relative_humidity", variable_map["wind_speed"]: "wind_speed"})
     subset["temperature"] = _convert_temperature(subset["temperature"])
     subset["relative_humidity"] = subset["relative_humidity"].clip(min=0.0, max=100.0)
@@ -130,10 +143,16 @@ def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig
     return subset[["temperature", "relative_humidity", "wind_speed"]].load()
 
 
-def extract_land_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> xr.Dataset:
+def extract_land_inputs(
+    dataset: xr.Dataset,
+    request: DatasetRequestConfig,
+    *,
+    window: ProcessingWindow | None = None,
+) -> xr.Dataset:
     variable_map = _resolve_variable_map(dataset, request.variable_map)
     subset = dataset[list(dict.fromkeys(variable_map.values()))]
     subset = _select_requested_times(subset, request.times)
+    subset = _select_time_window(subset, window)
     renamed = subset.rename({variable_map["precipitation"]: "precipitation", variable_map["land_sea_mask"]: "land_sea_mask"})
     renamed["precipitation"] = _convert_precipitation(renamed["precipitation"])
     logger.info("Extracted land inputs with sizes=%s", dict(renamed.sizes))
@@ -181,6 +200,28 @@ def _select_requested_times(dataset: xr.Dataset, requested_times: list[str]) -> 
     normalized = selected.isel(time=np.sort(unique_indices))
     logger.info("Selected %s daily timestamps matching requested times %s", normalized.sizes.get("time", 0), requested_times)
     return normalized
+
+
+def _select_time_window(dataset: xr.Dataset, window: ProcessingWindow | None) -> xr.Dataset:
+    if window is None or "time" not in dataset.coords:
+        return dataset
+
+    time_values = dataset["time"].values.astype("datetime64[D]")
+    start = np.datetime64(window.start.isoformat())
+    end = np.datetime64(window.end.isoformat())
+    selector = (time_values >= start) & (time_values <= end)
+    selected = dataset.isel(time=selector)
+    if selected.sizes.get("time", 0) == 0:
+        raise ProcessingError(
+            f"dataset does not contain timestamps inside processing window {window.start.isoformat()} -> {window.end.isoformat()}"
+        )
+    logger.info(
+        "Subset inputs to processing window %s -> %s retaining %s daily timestamps",
+        window.start.isoformat(),
+        window.end.isoformat(),
+        selected.sizes.get("time", 0),
+    )
+    return selected
 
 
 def _standardize_dataset(dataset: xr.Dataset) -> xr.Dataset:

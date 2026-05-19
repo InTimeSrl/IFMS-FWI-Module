@@ -155,7 +155,7 @@ class DownloadConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    chunking: Literal["monthly", "quarterly"] = "monthly"
+    chunking: Literal["monthly", "quarterly", "yearly"] = "monthly"
     remote_area_subset: bool = False
     retry_attempts: int = Field(default=4, ge=1, le=20)
     retry_wait_seconds: int = Field(default=30, ge=1, le=3_600)

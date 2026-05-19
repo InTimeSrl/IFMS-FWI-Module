@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import warnings
 from contextlib import ExitStack
@@ -21,7 +22,7 @@ from .georeferencing import native_grid_projection_attrs, native_lambert_crs, pr
 from .preprocess import PreparedInputs, prepare_fwi_inputs
 from .runtime_logging import bind_log_context
 from .storage import write_netcdf_atomic
-from .utils import ProcessingWindow, month_windows
+from .utils import ProcessingWindow, month_windows, months_are_contiguous
 
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,12 @@ class FWIProcessor:
         *,
         backend: DataStoreBackend | None = None,
         prepare_inputs=prepare_fwi_inputs,
+        percentile_year: int | None = None,
     ) -> None:
         self.config = config
         self.catalog = CatalogStore(config.paths.catalog_db)
-        self.downloader = CERRADataDownloader(config, self.catalog, backend=backend)
+        self._prepare_inputs_accepts_window = _prepare_inputs_supports_window(prepare_inputs)
+        self.downloader = CERRADataDownloader(config, self.catalog, backend=backend, percentile_year=percentile_year)
         self.prepare_inputs = prepare_inputs
 
     def run(self, *, resume: bool | None = None) -> list[Path]:
@@ -131,6 +134,12 @@ class FWIProcessor:
         raw = self.config.model_dump(mode="python")
         start_month = min(percentile.months)
         end_month = max(percentile.months)
+        if self.config.download.chunking == "yearly":
+            if not months_are_contiguous(percentile.months):
+                raise ConfigError(
+                    "download.chunking=yearly requires percentile.months to define a contiguous month range"
+                )
+            raw["period"]["spinup_days"] = 0
         raw["period"]["start"] = date(year, start_month, 1)
         raw["period"]["end"] = _month_end(date(year, end_month, 1))
 
@@ -139,7 +148,12 @@ class FWIProcessor:
         raw["paths"]["catalog_db"] = year_state_dir / "catalog.sqlite"
 
         year_config = AppConfig.model_validate(raw)
-        return FWIProcessor(year_config, backend=self.downloader.backend, prepare_inputs=self.prepare_inputs)
+        return FWIProcessor(
+            year_config,
+            backend=self.downloader.backend,
+            prepare_inputs=self.prepare_inputs,
+            percentile_year=year,
+        )
 
     def _percentile_source_paths(self, percentile: PercentileConfig) -> list[Path]:
         paths: list[Path] = []
@@ -278,7 +292,7 @@ class FWIProcessor:
             )
             downloads = self.downloader.fetch_window(window)
             logger.info("Downloads ready: atmosphere=%s land=%s", downloads.atmosphere_path, downloads.land_path)
-            prepared = self.prepare_inputs(downloads.atmosphere_path, downloads.land_path, self.config)
+            prepared = self._prepare_window_inputs(downloads.atmosphere_path, downloads.land_path, window)
             logger.info("Prepared input dataset with sizes=%s", dict(prepared.dataset.sizes))
             compute_inputs = prepared.dataset.drop_vars("mask", errors="ignore")
             result = compute_fwi_indices(compute_inputs, initial_state=state)
@@ -320,6 +334,11 @@ class FWIProcessor:
             )
             logger.info("Window processing completed successfully")
             return output_path
+
+    def _prepare_window_inputs(self, atmosphere_path: Path, land_path: Path, window: ProcessingWindow) -> PreparedInputs:
+        if self._prepare_inputs_accepts_window:
+            return self.prepare_inputs(atmosphere_path, land_path, self.config, window=window)
+        return self.prepare_inputs(atmosphere_path, land_path, self.config)
 
     def _restore_state(self, windows: list[ProcessingWindow]) -> tuple[FWIState | None, int]:
         latest = self.catalog.latest_completed_window()
@@ -440,3 +459,11 @@ def _month_end(value: date) -> date:
 def _percentile_variable_name(percentile: float) -> str:
     label = f"{percentile:g}".replace(".", "_")
     return f"fwi_p{label}"
+
+
+def _prepare_inputs_supports_window(prepare_inputs) -> bool:
+    try:
+        parameters = inspect.signature(prepare_inputs).parameters
+    except (TypeError, ValueError):
+        return False
+    return "window" in parameters

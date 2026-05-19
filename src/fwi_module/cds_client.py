@@ -13,7 +13,7 @@ from .checkpointing import CatalogStore, DownloadRecord
 from .config import AppConfig, DatasetRequestConfig
 from .exceptions import CredentialError, DatasetUnavailableError, DownloadError
 from .runtime_logging import bind_log_context
-from .utils import ProcessingWindow, ensure_directory, request_hash
+from .utils import DownloadChunk, ProcessingWindow, download_chunk_for_window, ensure_directory, request_hash
 
 
 logger = logging.getLogger(__name__)
@@ -136,36 +136,57 @@ class CdsApiBackend:
 
 
 class CERRADataDownloader:
-    """Download monthly CERRA subsets with local caching."""
+    """Download CERRA subsets with local caching and reusable calendar chunks."""
 
-    def __init__(self, config: AppConfig, catalog: CatalogStore, backend: DataStoreBackend | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        catalog: CatalogStore,
+        backend: DataStoreBackend | None = None,
+        *,
+        percentile_year: int | None = None,
+    ) -> None:
         self.config = config
         self.catalog = catalog
         self.backend = backend or create_backend(config)
+        self.percentile_year = percentile_year
 
     def check_authentication(self) -> None:
         self.backend.check_authentication()
 
     def fetch_window(self, window: ProcessingWindow) -> DownloadedWindow:
         specs = self._build_specs(window)
+        chunk = self._resolve_download_chunk(window)
         with bind_log_context(phase="download"):
-            logger.info("Fetching CDS inputs for window %s -> %s", window.start.isoformat(), window.end.isoformat())
-        atmosphere_path = self._download_spec(window, specs["atmosphere"])
-        land_path = self._download_spec(window, specs["land"])
+            logger.info(
+                "Fetching CDS inputs for processing window %s -> %s using download chunk %s -> %s",
+                window.start.isoformat(),
+                window.end.isoformat(),
+                chunk.window.start.isoformat(),
+                chunk.window.end.isoformat(),
+            )
+            if chunk.request_months is not None:
+                logger.info("Download chunk months: %s", list(chunk.request_months))
+        atmosphere_path = self._download_spec(chunk, specs["atmosphere"])
+        land_path = self._download_spec(chunk, specs["land"])
         return DownloadedWindow(atmosphere_path=atmosphere_path, land_path=land_path)
 
-    def _download_spec(self, window: ProcessingWindow, spec: RequestSpec) -> Path:
+    def _download_spec(self, chunk: DownloadChunk, spec: RequestSpec) -> Path:
         with bind_log_context(phase=f"download-{spec.label}"):
-            request = self._build_request(spec, window)
+            request = self._build_request(spec, chunk)
             cache_key = request_hash({"collection_id": spec.collection_id, "request": request})
             extension = ".nc" if spec.data_format == "netcdf" else ".grib"
-            target_path = ensure_directory(self.config.paths.cache_dir / spec.label) / f"{spec.collection_id}_{window.start:%Y%m%d}_{window.end:%Y%m%d}_{cache_key[:12]}{extension}"
+            target_path = (
+                ensure_directory(self.config.paths.cache_dir / spec.label)
+                / f"{spec.collection_id}_{chunk.window.start:%Y%m%d}_{chunk.window.end:%Y%m%d}_{cache_key[:12]}{extension}"
+            )
 
             logger.info(
-                "Prepared %s request for collection %s with %s variables and %s days",
+                "Prepared %s request for collection %s with %s variables, %s months and %s day values",
                 spec.label,
                 spec.collection_id,
                 len(spec.variables),
+                len(request["month"]),
                 len(request["day"]),
             )
             logger.info("Download target path: %s", target_path)
@@ -177,13 +198,13 @@ class CERRADataDownloader:
 
             logger.info("Cache miss for %s dataset; validating collection availability", spec.label)
             try:
-                self._ensure_collection_available(spec.collection_id, window.end)
+                self._ensure_collection_available(spec.collection_id, chunk.window.end)
                 self.catalog.upsert_download(
                     DownloadRecord(
                         cache_key=cache_key,
                         dataset_id=spec.collection_id,
-                        window_start=window.start.isoformat(),
-                        window_end=window.end.isoformat(),
+                        window_start=chunk.window.start.isoformat(),
+                        window_end=chunk.window.end.isoformat(),
                         status="running",
                         file_path=str(target_path),
                         metadata={"request": request, "label": spec.label},
@@ -199,8 +220,8 @@ class CERRADataDownloader:
                 DownloadRecord(
                     cache_key=cache_key,
                     dataset_id=spec.collection_id,
-                    window_start=window.start.isoformat(),
-                    window_end=window.end.isoformat(),
+                    window_start=chunk.window.start.isoformat(),
+                    window_end=chunk.window.end.isoformat(),
                     status="completed",
                     file_path=str(target_path),
                     request_id=request_id,
@@ -232,15 +253,22 @@ class CERRADataDownloader:
             "land": _request_spec_from_dataset("land", self.config.datasets.land),
         }
 
-    def _build_request(self, spec: RequestSpec, window: ProcessingWindow) -> dict[str, Any]:
-        dates = _window_dates(window)
+    def _build_request(self, spec: RequestSpec, chunk: DownloadChunk) -> dict[str, Any]:
+        dates = _window_dates(chunk.window)
+        years = sorted({f"{current.year:04d}" for current in dates})
+        months = (
+            [f"{month:02d}" for month in chunk.request_months]
+            if chunk.request_months is not None
+            else sorted({f"{current.month:02d}" for current in dates})
+        )
+        days = sorted({f"{current.day:02d}" for current in dates})
         request = dict(spec.request_base)
         request.update(
             {
                 "variable": spec.variables,
-                "year": sorted({f"{current.year:04d}" for current in dates}),
-                "month": sorted({f"{current.month:02d}" for current in dates}),
-                "day": [f"{current.day:02d}" for current in dates],
+                "year": years,
+                "month": months,
+                "day": days,
                 "data_format": spec.data_format,
                 "download_format": spec.download_format,
             }
@@ -250,6 +278,24 @@ class CERRADataDownloader:
         if spec.times:
             request["time"] = spec.times
         return request
+
+    def _resolve_download_chunk(self, window: ProcessingWindow) -> DownloadChunk:
+        return download_chunk_for_window(
+            window,
+            chunking=self.config.download.chunking,
+            period_start=self.config.period.extended_start,
+            period_end=self.config.period.end,
+            allowed_months=self._selected_months_for_chunk(window),
+        )
+
+    def _selected_months_for_chunk(self, window: ProcessingWindow) -> tuple[int, ...] | None:
+        if self.config.download.chunking != "yearly":
+            return None
+        if self.percentile_year is None or self.config.percentile is None:
+            return None
+        if window.start.year != self.percentile_year:
+            return None
+        return self.config.percentile.months
 
 
 def create_backend(config: AppConfig) -> DataStoreBackend:

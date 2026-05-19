@@ -65,6 +65,15 @@ def test_percentile_config_loads_and_normalizes_months() -> None:
     assert config.percentile.block_shape == (64, 96)
 
 
+def test_download_chunking_accepts_yearly() -> None:
+    data = dump_example_config()
+    data["download"]["chunking"] = "yearly"
+
+    config = AppConfig.model_validate(data)
+
+    assert config.download.chunking == "yearly"
+
+
 def test_invalid_percentile_config_is_rejected() -> None:
     data = dump_example_config()
     data["percentile"] = {
