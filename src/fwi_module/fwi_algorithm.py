@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+import logging
 from typing import Iterable
 
 import numpy as np
 import xarray as xr
 
 from .exceptions import ProcessingError
+
+
+logger = logging.getLogger(__name__)
 
 
 FFMC_COEFFICIENT = 250.0 * 59.5 / 101.0
@@ -79,10 +83,18 @@ def compute_fwi_indices(
     spatial_template = inputs["temperature"].isel(time=0, drop=True)
     state = initial_state.copy() if initial_state is not None else FWIState.from_shape(spatial_template.shape)
     latitudes = _extract_latitudes(inputs, spatial_template)
+    total_steps = inputs.sizes.get("time", 0)
+    logger.info(
+        "Starting FWI computation for %s daily steps on grid shape=%s (initial_state=%s)",
+        total_steps,
+        spatial_template.shape,
+        initial_state is not None,
+    )
 
     outputs: dict[str, list[xr.DataArray]] = {name: [] for name in ("ffmc", "dmc", "dc", "isi", "bui", "fwi", "dsr")}
     for index, raw_time in enumerate(inputs["time"].values):
         timestamp = _normalize_timestamp(raw_time)
+        logger.info("Processing daily FWI step %s/%s for %s", index + 1, total_steps, timestamp.date().isoformat())
         month = timestamp.month
         temperature = np.asarray(inputs["temperature"].isel(time=index).values, dtype=np.float64)
         relative_humidity = np.asarray(inputs["relative_humidity"].isel(time=index).values, dtype=np.float64)
@@ -124,6 +136,7 @@ def compute_fwi_indices(
     )
     for name in dataset.data_vars:
         dataset[name] = dataset[name].astype(np.float32)
+    logger.info("Completed FWI computation with variables: %s", ", ".join(dataset.data_vars))
     return ComputationResult(dataset=dataset, state=state)
 
 

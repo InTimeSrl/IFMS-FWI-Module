@@ -12,7 +12,12 @@ from .cds_client import CERRADataDownloader
 from .checkpointing import CatalogStore
 from .config import AppConfig, load_config
 from .exceptions import ConfigError, FWIError
+from .runtime_logging import bind_log_context, close_run_logging, configure_run_logging
 from .utils import ProcessingWindow, month_windows
+
+
+RUN_COMMANDS = {"run", "resume", "run-percentile", "aggregate-percentile"}
+LOG_LEVEL_CHOICES = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,28 +41,42 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--start", type=str, help="Override the processing start date (YYYY-MM-DD)")
     run_parser.add_argument("--end", type=str, help="Override the processing end date (YYYY-MM-DD)")
     run_parser.add_argument("--no-resume", action="store_true", help="Disable resume even if configured")
+    _add_logging_arguments(run_parser)
 
     run_percentile_parser = subparsers.add_parser("run-percentile", help="Run the multi-year seasonal percentile workflow")
     run_percentile_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
     run_percentile_parser.add_argument("--no-resume", action="store_true", help="Disable resume even if configured")
+    _add_logging_arguments(run_percentile_parser)
 
     aggregate_percentile_parser = subparsers.add_parser(
         "aggregate-percentile",
         help="Aggregate existing monthly outputs into the configured percentile raster",
     )
     aggregate_percentile_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
+    _add_logging_arguments(aggregate_percentile_parser)
 
     resume_parser = subparsers.add_parser("resume", help="Resume the processing pipeline")
     resume_parser.add_argument("config", type=Path, help="Path to the YAML configuration file")
     resume_parser.add_argument("--start", type=str, help="Override the processing start date (YYYY-MM-DD)")
     resume_parser.add_argument("--end", type=str, help="Override the processing end date (YYYY-MM-DD)")
+    _add_logging_arguments(resume_parser)
 
     return parser
+
+
+def _add_logging_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--log-level", choices=LOG_LEVEL_CHOICES, help="Override the runtime logging level")
+    parser.add_argument(
+        "--log-dir",
+        type=lambda value: Path(value).expanduser().resolve(),
+        help="Override the directory where the per-run log file is written",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    log_session = None
 
     try:
         if args.command == "validate-config":
@@ -76,38 +95,102 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"run", "resume"}:
             config = load_config(args.config)
             config = _override_processing_period(config, start=args.start, end=args.end)
+            config = _override_logging_settings(config, level=args.log_level, directory=args.log_dir)
+            log_session = configure_run_logging(config.logging, command=args.command)
             from .processor import FWIProcessor
 
             processor = FWIProcessor(config)
-            processor.run(resume=(args.command == "resume") or (not args.no_resume and config.processing.resume))
+            with bind_log_context(command=args.command, run_id=log_session.run_id):
+                _log_command_start(log_session.log_path, args.command, config, config_path=args.config)
+                processor.run(resume=(args.command == "resume") or (not args.no_resume and config.processing.resume))
+                _log_command_success(args.command)
+            _print_log_location(log_session.log_path)
             return 0
 
         if args.command == "run-percentile":
             config = load_config(args.config)
+            config = _override_logging_settings(config, level=args.log_level, directory=args.log_dir)
+            log_session = configure_run_logging(config.logging, command=args.command)
             from .processor import FWIProcessor
 
             processor = FWIProcessor(config)
-            output_path = processor.run_percentile_product(resume=not args.no_resume and config.processing.resume)
+            with bind_log_context(command=args.command, run_id=log_session.run_id):
+                _log_command_start(log_session.log_path, args.command, config, config_path=args.config)
+                output_path = processor.run_percentile_product(resume=not args.no_resume and config.processing.resume)
+                _log_command_success(args.command)
             print(f"Percentile output: {output_path}")
+            _print_log_location(log_session.log_path)
             return 0
 
         if args.command == "aggregate-percentile":
             config = load_config(args.config)
+            config = _override_logging_settings(config, level=args.log_level, directory=args.log_dir)
+            log_session = configure_run_logging(config.logging, command=args.command)
             from .processor import FWIProcessor
 
             processor = FWIProcessor(config)
-            output_path = processor.aggregate_percentile_product()
+            with bind_log_context(command=args.command, run_id=log_session.run_id):
+                _log_command_start(log_session.log_path, args.command, config, config_path=args.config)
+                output_path = processor.aggregate_percentile_product()
+                _log_command_success(args.command)
             print(f"Percentile output: {output_path}")
+            _print_log_location(log_session.log_path)
             return 0
     except ConfigError as exc:
+        _log_command_error(log_session, f"Configuration error: {exc}")
         print(f"Configuration error: {exc}", file=sys.stderr)
+        _print_log_location(log_session.log_path if log_session is not None else None, stream=sys.stderr)
         return 2
     except FWIError as exc:
+        _log_command_error(log_session, f"Processing error: {exc}")
         print(f"Processing error: {exc}", file=sys.stderr)
+        _print_log_location(log_session.log_path if log_session is not None else None, stream=sys.stderr)
         return 3
+    finally:
+        if log_session is not None:
+            close_run_logging(log_session.logger)
 
     parser.print_help(sys.stderr)
     return 1
+
+
+def _log_command_start(log_path: Path | None, command: str, config: AppConfig, *, config_path: Path) -> None:
+    import logging
+
+    logger = logging.getLogger(__name__)
+    with bind_log_context(phase="startup"):
+        logger.info("Starting command %s", command)
+        logger.info("Configuration file: %s", config_path)
+        logger.info("Run log file: %s", log_path if log_path is not None else "disabled")
+        logger.info("Output directory: %s", config.paths.output_dir)
+        logger.info("State directory: %s", config.paths.state_dir)
+        logger.info("Configured period: %s -> %s", config.period.start.isoformat(), config.period.end.isoformat())
+
+
+def _log_command_success(command: str) -> None:
+    import logging
+
+    logger = logging.getLogger(__name__)
+    with bind_log_context(phase="shutdown"):
+        logger.info("Command %s completed successfully", command)
+
+
+def _log_command_error(log_session, message: str) -> None:
+    import logging
+
+    if log_session is None:
+        return
+    logger = logging.getLogger(__name__)
+    with bind_log_context(command=log_session.command, run_id=log_session.run_id, phase="error"):
+        logger.exception(message)
+
+
+def _print_log_location(log_path: Path | None, *, stream=None) -> None:
+    if log_path is None:
+        return
+    if stream is None:
+        stream = sys.stdout
+    print(f"Run log: {log_path}", file=stream)
 
 
 def _inspect_cache(db_path: Path) -> int:
@@ -190,4 +273,18 @@ def _override_processing_period(config: AppConfig, *, start: str | None, end: st
     raw = config.model_dump(mode="python")
     raw["period"]["start"] = override_start
     raw["period"]["end"] = override_end
+    return AppConfig.model_validate(raw)
+
+
+def _override_logging_settings(config: AppConfig, *, level: str | None, directory: Path | None) -> AppConfig:
+    if level is None and directory is None:
+        return config
+
+    raw = config.model_dump(mode="python")
+    raw.setdefault("logging", {})
+    if level is not None:
+        raw["logging"]["level"] = level
+    if directory is not None:
+        raw["logging"]["directory"] = directory
+    raw["logging"]["enabled"] = True
     return AppConfig.model_validate(raw)

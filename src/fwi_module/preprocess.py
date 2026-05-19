@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,9 @@ from .config import AppConfig, BoundingBox, DatasetRequestConfig
 from .exceptions import ProcessingError
 from .georeferencing import native_grid_projection_attrs, projected_axis_coordinates, projection_coordinate_attrs
 from .masking import apply_spatial_mask
+
+
+logger = logging.getLogger(__name__)
 
 
 VARIABLE_NAME_GROUPS: tuple[tuple[str, ...], ...] = (
@@ -32,6 +36,7 @@ class PreparedInputs:
 def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig) -> PreparedInputs:
     """Load raw files and turn them into daily FWI inputs."""
 
+    logger.info("Preparing FWI inputs from atmosphere=%s and land=%s", atmosphere_path, land_path)
     atmosphere_raw = open_dataset_file(atmosphere_path)
     land_raw = open_dataset_file(land_path)
     try:
@@ -42,6 +47,7 @@ def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig
         land_raw.close()
 
     merged = xr.merge([atmosphere, land], compat="override", join="inner")
+    logger.info("Merged raw inputs with sizes=%s", dict(merged.sizes))
     merged = clip_to_bbox(merged, config.region.bbox)
     land_sea_mask = merged["land_sea_mask"]
     masked = apply_spatial_mask(
@@ -51,12 +57,21 @@ def prepare_fwi_inputs(atmosphere_path: Path, land_path: Path, config: AppConfig
         config.processing.land_sea_threshold,
         config.processing.coastal_buffer_cells,
     )
+    logger.info("Prepared masked FWI inputs with sizes=%s", dict(masked.sizes))
     return PreparedInputs(dataset=masked, land_mask=masked["mask"])
 
 
 def clip_to_bbox(dataset: xr.Dataset, bbox: BoundingBox) -> xr.Dataset:
     """Crop the dataset to the smallest grid rectangle intersecting the configured bbox."""
 
+    logger.info(
+        "Clipping dataset to bbox north=%s west=%s south=%s east=%s",
+        bbox.north,
+        bbox.west,
+        bbox.south,
+        bbox.east,
+    )
+    logger.info("Input sizes before clipping: %s", dict(dataset.sizes))
     lon, lat = _extract_lon_lat(dataset)
     bbox_mask = (lat >= bbox.south) & (lat <= bbox.north) & (lon >= bbox.west) & (lon <= bbox.east)
 
@@ -68,18 +83,23 @@ def clip_to_bbox(dataset: xr.Dataset, bbox: BoundingBox) -> xr.Dataset:
         valid_rows = bbox_mask.any(dim=col_dim)
         valid_cols = bbox_mask.any(dim=row_dim)
         dataset = dataset.isel({row_dim: valid_rows, col_dim: valid_cols})
+        logger.info("Reduced spatial extent to rows=%s cols=%s before final bbox mask", dataset.sizes.get(row_dim), dataset.sizes.get(col_dim))
         lon, lat = _extract_lon_lat(dataset)
         bbox_mask = (lat >= bbox.south) & (lat <= bbox.north) & (lon >= bbox.west) & (lon <= bbox.east)
 
-    return dataset.where(bbox_mask)
+    clipped = dataset.where(bbox_mask)
+    logger.info("Finished bbox clipping with sizes=%s", dict(clipped.sizes))
+    return clipped
 
 
 def open_dataset_file(path: Path) -> xr.Dataset:
     """Open NetCDF or GRIB files with xarray."""
 
     suffix = path.suffix.lower()
+    logger.info("Opening dataset file %s", path)
     if suffix in {".nc", ".nc4"}:
         dataset = xr.open_dataset(path)
+        logger.info("Detected NetCDF input format for %s", path)
     elif suffix in {".grib", ".grib2", ".grb"}:
         try:
             import cfgrib
@@ -91,6 +111,7 @@ def open_dataset_file(path: Path) -> xr.Dataset:
             groups = cfgrib.open_datasets(path, backend_kwargs={"indexpath": "", "read_keys": ["radius", "shapeOfTheEarth"]})
         prepared_groups = [_standardize_dataset(_drop_auxiliary_grib_coords(group)) for group in groups]
         dataset = xr.merge(prepared_groups, compat="override", join="outer", combine_attrs="drop_conflicts")
+        logger.info("Detected GRIB input format for %s with %s logical groups", path, len(groups))
     else:
         raise ProcessingError(f"unsupported data file format: {path}")
 
@@ -105,6 +126,7 @@ def extract_atmosphere_inputs(dataset: xr.Dataset, request: DatasetRequestConfig
     subset["temperature"] = _convert_temperature(subset["temperature"])
     subset["relative_humidity"] = subset["relative_humidity"].clip(min=0.0, max=100.0)
     subset["wind_speed"] = _convert_wind_speed(subset["wind_speed"])
+    logger.info("Extracted atmosphere inputs with sizes=%s", dict(subset.sizes))
     return subset[["temperature", "relative_humidity", "wind_speed"]].load()
 
 
@@ -114,6 +136,7 @@ def extract_land_inputs(dataset: xr.Dataset, request: DatasetRequestConfig) -> x
     subset = _select_requested_times(subset, request.times)
     renamed = subset.rename({variable_map["precipitation"]: "precipitation", variable_map["land_sea_mask"]: "land_sea_mask"})
     renamed["precipitation"] = _convert_precipitation(renamed["precipitation"])
+    logger.info("Extracted land inputs with sizes=%s", dict(renamed.sizes))
     return renamed[["precipitation", "land_sea_mask"]].load()
 
 
@@ -130,6 +153,7 @@ def _resolve_variable_map(dataset: xr.Dataset, variable_map: dict[str, str]) -> 
 
     if missing:
         raise ProcessingError(f"dataset is missing variables: {', '.join(sorted(missing))}")
+    logger.debug("Resolved dataset variables: %s", resolved)
     return resolved
 
 
@@ -154,7 +178,9 @@ def _select_requested_times(dataset: xr.Dataset, requested_times: list[str]) -> 
     normalized_time = selected["time"].values.astype("datetime64[D]").astype("datetime64[ns]")
     selected = selected.assign_coords(time=normalized_time)
     _, unique_indices = np.unique(normalized_time, return_index=True)
-    return selected.isel(time=np.sort(unique_indices))
+    normalized = selected.isel(time=np.sort(unique_indices))
+    logger.info("Selected %s daily timestamps matching requested times %s", normalized.sizes.get("time", 0), requested_times)
+    return normalized
 
 
 def _standardize_dataset(dataset: xr.Dataset) -> xr.Dataset:

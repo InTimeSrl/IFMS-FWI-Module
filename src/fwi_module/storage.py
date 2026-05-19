@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -12,6 +13,9 @@ from .config import StorageConfig
 from .utils import ensure_directory
 
 
+logger = logging.getLogger(__name__)
+
+
 def write_netcdf_atomic(dataset: xr.Dataset, target_path: Path, storage: StorageConfig) -> Path:
     """Write a dataset atomically to a NetCDF4 file."""
 
@@ -20,12 +24,16 @@ def write_netcdf_atomic(dataset: xr.Dataset, target_path: Path, storage: Storage
     file_descriptor, temp_name = tempfile.mkstemp(suffix=target_path.suffix or ".nc", dir=target_path.parent)
     os.close(file_descriptor)
     temp_path = Path(temp_name)
+    logger.info("Writing NetCDF dataset to %s using temporary file %s", target_path, temp_path)
+    logger.info("Dataset variables for write: %s", ", ".join(dataset.data_vars))
     try:
         dataset.to_netcdf(temp_path, engine="netcdf4", format="NETCDF4", encoding=encoding)
         os.replace(temp_path, target_path)
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
+    size_bytes = target_path.stat().st_size if target_path.exists() else "unknown"
+    logger.info("Completed NetCDF write to %s (size_bytes=%s)", target_path, size_bytes)
     return target_path
 
 

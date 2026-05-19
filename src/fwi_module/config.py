@@ -192,6 +192,19 @@ class StorageConfig(BaseModel):
     state_template: str = "state_{year}{month:02d}{day:02d}.nc"
 
 
+class LoggingConfig(BaseModel):
+    """Runtime logging controls for console and per-run log files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    console: bool = True
+    file: bool = True
+    directory: Path | None = None
+    filename_template: str = "{command}_{started_at}_{run_id}.log"
+
+
 class ProcessingConfig(BaseModel):
     """Execution controls for masking, resume and resource usage."""
 
@@ -264,9 +277,16 @@ class AppConfig(BaseModel):
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     percentile: PercentileConfig | None = None
+
+    @model_validator(mode="after")
+    def apply_logging_defaults(self) -> "AppConfig":
+        if self.logging.directory is None:
+            self.logging.directory = self.paths.state_dir / "logs"
+        return self
 
     def resolved(self, base_dir: Path) -> "AppConfig":
         data = self.model_dump(mode="python")
@@ -277,6 +297,9 @@ class AppConfig(BaseModel):
                 if value is None:
                     continue
                 section[key] = _resolve_path(base_dir, Path(value))
+
+        if data["logging"]["directory"] is not None:
+            data["logging"]["directory"] = _resolve_path(base_dir, Path(data["logging"]["directory"]))
 
         return AppConfig.model_validate(data)
 
@@ -292,7 +315,8 @@ class AppConfig(BaseModel):
             f"Land dataset: {self.datasets.land.collection_id}\n"
             f"Cache dir: {self.paths.cache_dir}\n"
             f"Output dir: {self.paths.output_dir}\n"
-            f"Catalog DB: {self.paths.catalog_db}"
+            f"Catalog DB: {self.paths.catalog_db}\n"
+            f"Log dir: {self.logging.directory}"
         )
 
 
@@ -392,6 +416,14 @@ def dump_example_config() -> dict[str, Any]:
                 "intermediate_output": "full",
                 "filename_template": "fwi_{year}{month:02d}.nc",
                 "state_template": "state_{year}{month:02d}{day:02d}.nc",
+            },
+            "logging": {
+                "enabled": True,
+                "level": "INFO",
+                "console": True,
+                "file": True,
+                "directory": "data/state/logs",
+                "filename_template": "{command}_{started_at}_{run_id}.log",
             },
             "processing": {
                 "land_sea_threshold": 0.0,

@@ -19,10 +19,17 @@ def test_example_config_loads_and_resolves_paths() -> None:
     assert config.datasets.atmosphere.collection_id == "reanalysis-cerra-single-levels"
     assert config.paths.cache_dir.is_absolute()
     assert config.paths.catalog_db == config.paths.state_dir / "catalog.sqlite"
+    assert config.logging.directory == config.paths.state_dir / "logs"
     assert config.storage.intermediate_output == "full"
     assert config.percentile is not None
     assert config.percentile.start_year == 1991
     assert config.percentile.months == (5, 6, 7, 8, 9)
+
+
+def test_logging_config_defaults_to_state_log_dir() -> None:
+    config = AppConfig.model_validate(dump_example_config())
+
+    assert config.logging.directory == config.paths.state_dir / "logs"
 
 
 def test_invalid_bbox_is_rejected() -> None:
@@ -71,3 +78,9 @@ def test_invalid_percentile_config_is_rejected() -> None:
 
     with pytest.raises(Exception):
         AppConfig.model_validate(data)
+
+
+def test_logging_directory_is_resolved_with_config_file() -> None:
+    config = load_config(PROJECT_ROOT / "examples" / "greece.yaml")
+
+    assert config.logging.directory == config.paths.state_dir / "logs"

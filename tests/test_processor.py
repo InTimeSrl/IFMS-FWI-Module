@@ -9,6 +9,7 @@ import xarray as xr
 from fwi_module.cds_client import DataStoreBackend
 from fwi_module.config import AppConfig, dump_example_config
 from fwi_module.processor import FWIProcessor
+from fwi_module.runtime_logging import bind_log_context, close_run_logging, configure_run_logging
 
 
 class FakeBackend(DataStoreBackend):
@@ -52,12 +53,27 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
     backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
     processor = FWIProcessor(config, backend=backend)
 
-    outputs = processor.run(resume=False)
+    log_session = configure_run_logging(config.logging, command="run")
+    try:
+        with bind_log_context(command="run", run_id=log_session.run_id):
+            outputs = processor.run(resume=False)
+    finally:
+        close_run_logging(log_session.logger)
     first_request_count = len(backend.requests)
 
     assert len(outputs) == 2
     assert all(path.exists() for path in outputs)
     assert first_request_count == 4
+    assert log_session.log_path is not None and log_session.log_path.exists()
+    log_content = log_session.log_path.read_text(encoding="utf-8")
+    assert "Checking CDS authentication before processing run" in log_content
+    assert "Starting processing window 1/2" in log_content
+    assert "Cache miss for atmosphere dataset" in log_content
+    assert "Preparing FWI inputs" in log_content
+    assert "Processing daily FWI step 1/30" in log_content
+    assert "Writing NetCDF dataset to" in log_content
+    assert "Checkpoint written to" in log_content
+    assert "Window processing completed successfully" in log_content
 
     with xr.open_dataset(outputs[0]) as dataset:
         assert dataset.attrs["Conventions"] == "CF-1.8"
@@ -246,7 +262,12 @@ def test_run_percentile_product_processes_each_year_and_writes_final_raster(tmp_
     backend = FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id)
     processor = FWIProcessor(config, backend=backend)
 
-    output_path = processor.run_percentile_product(resume=False)
+    log_session = configure_run_logging(config.logging, command="run-percentile")
+    try:
+        with bind_log_context(command="run-percentile", run_id=log_session.run_id):
+            output_path = processor.run_percentile_product(resume=False)
+    finally:
+        close_run_logging(log_session.logger)
 
     may_2020 = config.paths.output_dir / config.storage.filename_template.format(year=2020, month=5)
     may_2021 = config.paths.output_dir / config.storage.filename_template.format(year=2021, month=5)
@@ -257,6 +278,14 @@ def test_run_percentile_product_processes_each_year_and_writes_final_raster(tmp_
     assert (config.paths.state_dir / "percentile" / "2020" / "catalog.sqlite").exists()
     assert (config.paths.state_dir / "percentile" / "2021" / "catalog.sqlite").exists()
     assert len(backend.requests) == 4
+    assert log_session.log_path is not None and log_session.log_path.exists()
+    log_content = log_session.log_path.read_text(encoding="utf-8")
+    assert "Starting percentile workflow" in log_content
+    assert "Processing percentile year 1/2" in log_content
+    assert "Processing percentile year 2/2" in log_content
+    assert "Starting final percentile aggregation step" in log_content
+    assert "Aggregating percentile block 1/4" in log_content
+    assert "Percentile product written to" in log_content
 
     with xr.open_dataset(may_2020) as first_year, xr.open_dataset(may_2021) as second_year, xr.open_dataset(output_path) as aggregated:
         assert set(first_year.data_vars) == {"fwi", "mask", "spatial_ref"}

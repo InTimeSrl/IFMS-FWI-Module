@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date
@@ -11,7 +12,11 @@ from typing import Any, Protocol
 from .checkpointing import CatalogStore, DownloadRecord
 from .config import AppConfig, DatasetRequestConfig
 from .exceptions import CredentialError, DatasetUnavailableError, DownloadError
+from .runtime_logging import bind_log_context
 from .utils import ProcessingWindow, ensure_directory, request_hash
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,46 +148,74 @@ class CERRADataDownloader:
 
     def fetch_window(self, window: ProcessingWindow) -> DownloadedWindow:
         specs = self._build_specs(window)
+        with bind_log_context(phase="download"):
+            logger.info("Fetching CDS inputs for window %s -> %s", window.start.isoformat(), window.end.isoformat())
         atmosphere_path = self._download_spec(window, specs["atmosphere"])
         land_path = self._download_spec(window, specs["land"])
         return DownloadedWindow(atmosphere_path=atmosphere_path, land_path=land_path)
 
     def _download_spec(self, window: ProcessingWindow, spec: RequestSpec) -> Path:
-        request = self._build_request(spec, window)
-        cache_key = request_hash({"collection_id": spec.collection_id, "request": request})
-        extension = ".nc" if spec.data_format == "netcdf" else ".grib"
-        target_path = ensure_directory(self.config.paths.cache_dir / spec.label) / f"{spec.collection_id}_{window.start:%Y%m%d}_{window.end:%Y%m%d}_{cache_key[:12]}{extension}"
+        with bind_log_context(phase=f"download-{spec.label}"):
+            request = self._build_request(spec, window)
+            cache_key = request_hash({"collection_id": spec.collection_id, "request": request})
+            extension = ".nc" if spec.data_format == "netcdf" else ".grib"
+            target_path = ensure_directory(self.config.paths.cache_dir / spec.label) / f"{spec.collection_id}_{window.start:%Y%m%d}_{window.end:%Y%m%d}_{cache_key[:12]}{extension}"
 
-        cached = self.catalog.get_download(cache_key)
-        if cached is not None and cached.status == "completed" and cached.file_path and Path(cached.file_path).exists():
-            return Path(cached.file_path)
+            logger.info(
+                "Prepared %s request for collection %s with %s variables and %s days",
+                spec.label,
+                spec.collection_id,
+                len(spec.variables),
+                len(request["day"]),
+            )
+            logger.info("Download target path: %s", target_path)
 
-        self._ensure_collection_available(spec.collection_id, window.end)
-        self.catalog.upsert_download(
-            DownloadRecord(
-                cache_key=cache_key,
-                dataset_id=spec.collection_id,
-                window_start=window.start.isoformat(),
-                window_end=window.end.isoformat(),
-                status="running",
-                file_path=str(target_path),
-                metadata={"request": request, "label": spec.label},
+            cached = self.catalog.get_download(cache_key)
+            if cached is not None and cached.status == "completed" and cached.file_path and Path(cached.file_path).exists():
+                logger.info("Cache hit for %s dataset: %s", spec.label, cached.file_path)
+                return Path(cached.file_path)
+
+            logger.info("Cache miss for %s dataset; validating collection availability", spec.label)
+            try:
+                self._ensure_collection_available(spec.collection_id, window.end)
+                self.catalog.upsert_download(
+                    DownloadRecord(
+                        cache_key=cache_key,
+                        dataset_id=spec.collection_id,
+                        window_start=window.start.isoformat(),
+                        window_end=window.end.isoformat(),
+                        status="running",
+                        file_path=str(target_path),
+                        metadata={"request": request, "label": spec.label},
+                    )
+                )
+                logger.info("Submitting download for %s dataset", spec.label)
+                request_id = self.backend.retrieve(spec.collection_id, request, target_path)
+            except Exception:
+                logger.exception("Download failed for %s dataset (%s)", spec.label, spec.collection_id)
+                raise
+
+            self.catalog.upsert_download(
+                DownloadRecord(
+                    cache_key=cache_key,
+                    dataset_id=spec.collection_id,
+                    window_start=window.start.isoformat(),
+                    window_end=window.end.isoformat(),
+                    status="completed",
+                    file_path=str(target_path),
+                    request_id=request_id,
+                    metadata={"request": request, "label": spec.label},
+                )
             )
-        )
-        request_id = self.backend.retrieve(spec.collection_id, request, target_path)
-        self.catalog.upsert_download(
-            DownloadRecord(
-                cache_key=cache_key,
-                dataset_id=spec.collection_id,
-                window_start=window.start.isoformat(),
-                window_end=window.end.isoformat(),
-                status="completed",
-                file_path=str(target_path),
-                request_id=request_id,
-                metadata={"request": request, "label": spec.label},
+            size_bytes = target_path.stat().st_size if target_path.exists() else "unknown"
+            logger.info(
+                "Download completed for %s dataset at %s (request_id=%s, size_bytes=%s)",
+                spec.label,
+                target_path,
+                request_id,
+                size_bytes,
             )
-        )
-        return target_path
+            return target_path
 
     def _ensure_collection_available(self, collection_id: str, requested_end: date) -> None:
         if not self.config.processing.fail_on_dataset_gap:

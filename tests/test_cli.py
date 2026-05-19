@@ -168,6 +168,56 @@ def test_aggregate_percentile_invokes_processor(tmp_path: Path, monkeypatch) -> 
     assert state["called"] is True
 
 
+def test_run_creates_per_run_log_file(tmp_path: Path, monkeypatch, capsys) -> None:
+    import fwi_module.processor as processor_module
+
+    config_path = _write_config(tmp_path)
+
+    class FakeProcessor:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def run(self, *, resume: bool | None = None):
+            return []
+
+    monkeypatch.setattr(processor_module, "FWIProcessor", FakeProcessor)
+
+    exit_code = main(["run", str(config_path), "--no-resume"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Run log:" in output
+    log_path = Path(output.strip().split("Run log: ", maxsplit=1)[1])
+    assert log_path.exists()
+    log_content = log_path.read_text(encoding="utf-8")
+    assert "Starting command run" in log_content
+    assert "Command run completed successfully" in log_content
+
+
+def test_run_log_dir_override_is_applied(tmp_path: Path, monkeypatch, capsys) -> None:
+    import fwi_module.processor as processor_module
+
+    config_path = _write_config(tmp_path)
+    log_dir = tmp_path / "custom-logs"
+
+    class FakeProcessor:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def run(self, *, resume: bool | None = None):
+            return []
+
+    monkeypatch.setattr(processor_module, "FWIProcessor", FakeProcessor)
+
+    exit_code = main(["run", str(config_path), "--no-resume", "--log-level", "DEBUG", "--log-dir", str(log_dir)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    log_path = Path(output.strip().split("Run log: ", maxsplit=1)[1])
+    assert log_path.parent == log_dir.resolve()
+    assert log_path.exists()
+
+
 def _write_config(tmp_path: Path, *, client: str = "ecmwf_datastores") -> Path:
     import yaml
 

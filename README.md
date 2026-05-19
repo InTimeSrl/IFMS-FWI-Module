@@ -89,9 +89,24 @@ Campi principali:
 - `datasets.*`: collezioni CDS, variabili e orari da estrarre
 - `paths.*`: cache, output e database SQLite locale
 - `storage.*`: formato, compressione e naming file
+- `logging.*`: livello, output su console, directory dei log e naming del file dedicato per ogni run
 - `storage.intermediate_output`: `full` per mantenere gli intermedi correnti, `climatology` per salvare solo `fwi` e `mask` negli output mensili
 - `processing.*`: resume, soglia terra/mare, buffer costiero opzionale, limiti operativi
 - `percentile.*`: baseline multiannuale per il prodotto finale P90, mesi da includere, percentile richiesto, blocchi spaziali e naming dell'output finale
+
+Sezione `logging` consigliata:
+
+```yaml
+logging:
+	enabled: true
+	level: INFO
+	console: true
+	file: true
+	directory: data/state/logs
+	filename_template: "{command}_{started_at}_{run_id}.log"
+```
+
+Con questa configurazione ogni invocazione `run`, `resume`, `run-percentile` o `aggregate-percentile` scrive lo stato di avanzamento sia a console sia in un file dedicato nella directory configurata. Il file contiene il tracciamento granulare delle richieste/download CDS, preprocess, clip, mask, loop giornaliero FWI, checkpoint, output e aggregazione percentile.
 
 ### CLI
 
@@ -105,6 +120,12 @@ Esecuzione pipeline:
 
 ```powershell
 uv run fwi-module run examples/greece.yaml
+```
+
+Override del livello di log e della directory dei file per-run:
+
+```powershell
+uv run fwi-module run examples/greece.yaml --log-level DEBUG --log-dir logs/fwi
 ```
 
 Esecuzione su una sottofinestra temporale senza modificare il file YAML:
@@ -130,6 +151,8 @@ Aggregazione finale del raster P90 a partire dagli output mensili gia' presenti:
 ```powershell
 uv run fwi-module aggregate-percentile examples/greece.yaml
 ```
+
+Al termine di ogni comando di elaborazione il CLI stampa il percorso del file log generato, cosi' il run puo' essere monitorato in tempo reale a console e poi ispezionato a posteriori dal file dedicato.
 
 Ispezione cache/catalogo:
 
@@ -163,6 +186,8 @@ Se `storage.intermediate_output: climatology`, gli output mensili intermedi veng
 - `mask`
 
 Gli stati intermedi per il resume sono scritti come NetCDF4 separati nella directory `state_dir`.
+
+I log runtime sono scritti in file separati sotto `logging.directory`; per default il percorso e' `state_dir/logs` e il nome del file include comando, timestamp UTC e `run_id`, in modo che ogni esecuzione abbia una traccia indipendente.
 
 Quando e' configurata la sezione `percentile`, il package puo' produrre anche un raster finale con una variabile `fwi_pXX` che assegna a ogni cella il percentile richiesto dei valori giornalieri `fwi` calcolati sui mesi selezionati e su tutta la baseline multiannuale. Il file finale viene scritto nella stessa `output_dir` degli output mensili, con un nome derivato da `percentile.output_template`.
 
