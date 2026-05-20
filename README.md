@@ -217,7 +217,7 @@ Per aumentare la copertura costiera si possono combinare:
 - `processing.land_sea_threshold`: con `0.0` viene tenuto qualunque pixel con una frazione di terra positiva
 - `processing.coastal_buffer_cells`: espande il mask finale di N celle, utile per includere meglio le coste anche prendendo alcuni pixel di mare
 
-Gli output includono una variabile `spatial_ref` con metadati CF/GDAL della griglia Lambert conforme nativa di CERRA, coordinate proiettate `x`/`y` in metri e coordinate geografiche ausiliarie `lat`/`lon`, in modo che strumenti GIS come QGIS possano sovrapporre correttamente il file alla basemap.
+Gli output includono una variabile `spatial_ref` con metadati CF/GDAL in EPSG:4326 e una vera griglia geografica regolare: le coordinate `x`/`lon` sono in gradi est, le coordinate `y`/`lat` sono in gradi nord e i dati vengono riproiettati dalla Lambert conforme nativa di CERRA. Se i metadati CRS/proiezione nativa non sono presenti nel dataset sorgente, il package assume la proiezione Lambert standard di CERRA prima di eseguire la riproiezione verso 4326.
 
 ### Strategia prestazionale
 

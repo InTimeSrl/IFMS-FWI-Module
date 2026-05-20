@@ -18,7 +18,7 @@ from .checkpointing import CatalogStore, WindowRecord
 from .config import AppConfig, PercentileConfig
 from .exceptions import ConfigError, ProcessingError
 from .fwi_algorithm import FWIState, compute_fwi_indices
-from .georeferencing import native_grid_projection_attrs, native_lambert_crs, projection_coordinate_attrs
+from .georeferencing import geographic_coordinate_attrs, reproject_dataset_to_wgs84
 from .preprocess import PreparedInputs, prepare_fwi_inputs
 from .runtime_logging import bind_log_context
 from .storage import write_netcdf_atomic
@@ -380,18 +380,24 @@ class FWIProcessor:
         if "lat" not in cleaned.coords or "lon" not in cleaned.coords:
             return cleaned
 
-        annotated = cleaned.copy()
+        annotated = reproject_dataset_to_wgs84(cleaned)
         spatial_ref_attrs = self._spatial_ref_attrs(annotated)
         annotated["spatial_ref"] = xr.DataArray(np.int32(0), attrs=spatial_ref_attrs)
         annotated.coords["time"].attrs.setdefault("standard_name", "time") if "time" in annotated.coords else None
         if "time" in annotated.coords:
             annotated.coords["time"].attrs.setdefault("axis", "T")
         if "x" in annotated.coords:
-            for key, value in projection_coordinate_attrs("x").items():
+            for key, value in geographic_coordinate_attrs("x").items():
                 annotated.coords["x"].attrs.setdefault(key, value)
         if "y" in annotated.coords:
-            for key, value in projection_coordinate_attrs("y").items():
+            for key, value in geographic_coordinate_attrs("y").items():
                 annotated.coords["y"].attrs.setdefault(key, value)
+        if "lon" in annotated.coords:
+            for key, value in geographic_coordinate_attrs("x").items():
+                annotated.coords["lon"].attrs.setdefault(key, value)
+        if "lat" in annotated.coords:
+            for key, value in geographic_coordinate_attrs("y").items():
+                annotated.coords["lat"].attrs.setdefault(key, value)
 
         for name in annotated.data_vars:
             if name == "spatial_ref":
@@ -405,27 +411,12 @@ class FWIProcessor:
         return annotated
 
     def _spatial_ref_attrs(self, dataset: xr.Dataset) -> dict[str, object]:
-        projection = native_grid_projection_attrs(dataset)
-        if projection is not None and "x" in dataset.coords and "y" in dataset.coords:
-            native_crs = native_lambert_crs(projection)
-            spatial_ref_attrs = dict(native_crs.to_cf())
-            wkt = native_crs.to_wkt()
-            spatial_ref_attrs.update(
-                {
-                    "projected_crs_name": "CERRA native Lambert conformal grid",
-                    "long_name": "CERRA native Lambert conformal grid",
-                    "spatial_ref": wkt,
-                    "crs_wkt": wkt,
-                }
-            )
-            return spatial_ref_attrs
-
         geographic_crs = CRS.from_epsg(4326)
         spatial_ref_attrs = dict(geographic_crs.to_cf())
         wkt = geographic_crs.to_wkt()
         spatial_ref_attrs.update(
             {
-                "long_name": "WGS 84 geographic CRS for auxiliary geolocation coordinates",
+                "long_name": "WGS 84 geographic CRS for reprojected export grid",
                 "spatial_ref": wkt,
                 "crs_wkt": wkt,
             }

@@ -82,6 +82,10 @@ def test_processor_runs_monthly_pipeline_and_resumes(tmp_path: Path, monkeypatch
         assert "spatial_ref" in dataset.data_vars
         assert dataset["spatial_ref"].attrs["grid_mapping_name"] == "latitude_longitude"
         assert dataset["fwi"].attrs["grid_mapping"] == "spatial_ref"
+        assert dataset.coords["x"].attrs["units"] == "degrees_east"
+        assert dataset.coords["y"].attrs["units"] == "degrees_north"
+        assert dataset["lat"].dims == ("y",)
+        assert dataset["lon"].dims == ("x",)
         assert "abbrevs" not in dataset.coords
         assert "names" not in dataset.coords
 
@@ -224,7 +228,7 @@ def test_processor_writes_climatology_intermediate_outputs(tmp_path: Path, monke
         assert dataset["fwi"].attrs["grid_mapping"] == "spatial_ref"
 
 
-def test_processor_annotates_native_lambert_grid_when_projection_metadata_is_present(tmp_path: Path) -> None:
+def test_processor_reprojects_native_lambert_grid_to_wgs84_when_projection_metadata_is_present(tmp_path: Path) -> None:
     config = AppConfig.model_validate(dump_example_config()).resolved(tmp_path)
     processor = FWIProcessor(config, backend=FakeBackend(config.datasets.atmosphere.collection_id, config.datasets.land.collection_id))
 
@@ -257,11 +261,14 @@ def test_processor_annotates_native_lambert_grid_when_projection_metadata_is_pre
 
     annotated = processor._annotate_output_georeferencing(dataset)
 
-    assert annotated["spatial_ref"].attrs["grid_mapping_name"] == "lambert_conformal_conic"
-    assert annotated["spatial_ref"].attrs["longitude_of_central_meridian"] == 8.0
+    assert annotated["spatial_ref"].attrs["grid_mapping_name"] == "latitude_longitude"
     assert annotated["fwi"].attrs["grid_mapping"] == "spatial_ref"
-    assert annotated.coords["x"].attrs["standard_name"] == "projection_x_coordinate"
-    assert annotated.coords["y"].attrs["standard_name"] == "projection_y_coordinate"
+    assert annotated.coords["x"].attrs["standard_name"] == "longitude"
+    assert annotated.coords["y"].attrs["standard_name"] == "latitude"
+    assert annotated.coords["x"].attrs["units"] == "degrees_east"
+    assert annotated.coords["y"].attrs["units"] == "degrees_north"
+    assert annotated["lat"].dims == ("y",)
+    assert annotated["lon"].dims == ("x",)
 
 
 def test_processor_aggregates_multi_year_percentile_in_spatial_blocks(tmp_path: Path) -> None:
@@ -455,8 +462,8 @@ def _request_timestamps(request: dict[str, object], time_values: list[str]) -> l
 def _write_monthly_fwi_output(path: Path, year: int, month: int, values: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     times = np.array([f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-02"], dtype="datetime64[ns]")
-    lat = xr.DataArray(np.array([[39.0, 39.2], [38.8, 39.1]], dtype=float), dims=("y", "x"))
-    lon = xr.DataArray(np.array([[22.0, 22.2], [22.1, 22.3]], dtype=float), dims=("y", "x"))
+    lat = np.array([39.2, 38.8], dtype=float)
+    lon = np.array([22.0, 22.3], dtype=float)
     mask = np.array([[1, 1], [1, 0]], dtype=np.uint8)
 
     dataset = xr.Dataset(
@@ -466,10 +473,12 @@ def _write_monthly_fwi_output(path: Path, year: int, month: int, values: np.ndar
         },
         coords={
             "time": times,
-            "y": [0, 1],
-            "x": [0, 1],
-            "lat": lat,
-            "lon": lon,
+            "y": ("y", lat),
+            "x": ("x", lon),
+            "lat": ("y", lat),
+            "lon": ("x", lon),
         },
     )
+    dataset.coords["y"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
+    dataset.coords["x"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
     dataset.to_netcdf(path)
