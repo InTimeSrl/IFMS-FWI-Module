@@ -120,3 +120,43 @@ def test_assign_native_projection_coordinates_uses_cerra_lambert_grid() -> None:
     np.testing.assert_allclose(projected.coords["y"].values, [-2_937_000.0, -2_931_500.0])
     assert projected.coords["x"].attrs["standard_name"] == "projection_x_coordinate"
     assert projected.coords["y"].attrs["standard_name"] == "projection_y_coordinate"
+
+
+def test_assign_native_projection_coordinates_replaces_cached_netcdf_index_axes_with_cerra_lambert_grid() -> None:
+    dataset = xr.Dataset(
+        data_vars={"t2m": (("time", "y", "x"), np.zeros((1, 2, 3), dtype=float))},
+        coords={
+            "time": [np.datetime64("2023-04-01T12:00:00")],
+            "y": [0, 1],
+            "x": [0, 1, 2],
+            "lat": (("y", "x"), np.array([[20.292281, 20.292281, 20.292281], [20.3418, 20.3418, 20.3418]], dtype=float)),
+            "lon": (("y", "x"), np.array([[-17.485943, -17.4267, -17.3674], [-17.4886, -17.4294, -17.3701]], dtype=float)),
+        },
+    )
+
+    projected = _assign_native_projection_coordinates(dataset)
+
+    np.testing.assert_allclose(projected.coords["x"].values, [-2_937_000.0, -2_931_500.0, -2_926_000.0])
+    np.testing.assert_allclose(projected.coords["y"].values, [-2_937_000.0, -2_931_500.0])
+    assert projected.coords["x"].attrs["units"] == "m"
+    assert projected.coords["y"].attrs["units"] == "m"
+
+
+def test_assign_native_projection_coordinates_keeps_regular_geographic_axes() -> None:
+    dataset = xr.Dataset(
+        data_vars={"t2m": (("time", "y", "x"), np.zeros((1, 2, 3), dtype=float))},
+        coords={
+            "time": [np.datetime64("2023-04-01T12:00:00")],
+            "y": xr.DataArray([39.2, 38.8], dims=("y",), attrs={"standard_name": "latitude", "units": "degrees_north"}),
+            "x": xr.DataArray([22.0, 22.2, 22.4], dims=("x",), attrs={"standard_name": "longitude", "units": "degrees_east"}),
+            "lat": ("y", np.array([39.2, 38.8], dtype=float)),
+            "lon": ("x", np.array([22.0, 22.2, 22.4], dtype=float)),
+        },
+    )
+
+    projected = _assign_native_projection_coordinates(dataset)
+
+    np.testing.assert_allclose(projected.coords["x"].values, [22.0, 22.2, 22.4])
+    np.testing.assert_allclose(projected.coords["y"].values, [39.2, 38.8])
+    assert projected.coords["x"].attrs["units"] == "degrees_east"
+    assert projected.coords["y"].attrs["units"] == "degrees_north"

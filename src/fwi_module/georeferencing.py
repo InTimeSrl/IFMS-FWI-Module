@@ -164,6 +164,12 @@ def has_regular_geographic_grid(dataset: xr.Dataset) -> bool:
     return "degree" in x_units and "degree" in y_units
 
 
+def has_projected_coordinate_grid(dataset: xr.Dataset) -> bool:
+    x_coord = dataset.coords.get("x")
+    y_coord = dataset.coords.get("y")
+    return _looks_like_projected_axis(x_coord, "x") and _looks_like_projected_axis(y_coord, "y")
+
+
 def reproject_dataset_to_wgs84(dataset: xr.Dataset) -> xr.Dataset:
     """Reproject a dataset from the native Lambert CERRA grid to a regular EPSG:4326 grid."""
 
@@ -242,9 +248,9 @@ def projected_axes_for_dataset(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve the native projected x/y axes for the source grid."""
 
-    x_coord = dataset.coords.get("x")
-    y_coord = dataset.coords.get("y")
-    if _looks_like_projected_axis(x_coord, "x") and _looks_like_projected_axis(y_coord, "y"):
+    if has_projected_coordinate_grid(dataset):
+        x_coord = dataset.coords["x"]
+        y_coord = dataset.coords["y"]
         return np.asarray(x_coord.values, dtype=np.float64), np.asarray(y_coord.values, dtype=np.float64)
 
     lon, lat = extract_lon_lat_coordinates(dataset)

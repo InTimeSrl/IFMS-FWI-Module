@@ -11,7 +11,14 @@ import xarray as xr
 
 from .config import AppConfig, BoundingBox, DatasetRequestConfig
 from .exceptions import ProcessingError
-from .georeferencing import native_grid_projection_attrs, projected_axis_coordinates, projection_coordinate_attrs
+from .georeferencing import (
+    default_cerra_lambert_projection,
+    has_projected_coordinate_grid,
+    has_regular_geographic_grid,
+    native_grid_projection_attrs,
+    projected_axis_coordinates,
+    projection_coordinate_attrs,
+)
 from .masking import apply_spatial_mask
 from .utils import ProcessingWindow
 
@@ -273,12 +280,11 @@ def _assign_time_coordinate(dataset: xr.Dataset, time_values: np.ndarray) -> xr.
 def _assign_native_projection_coordinates(dataset: xr.Dataset) -> xr.Dataset:
     if not {"x", "y"}.issubset(dataset.dims):
         return dataset
-    if "x" in dataset.coords and "y" in dataset.coords:
+
+    if has_regular_geographic_grid(dataset) or has_projected_coordinate_grid(dataset):
         return dataset
 
-    projection = native_grid_projection_attrs(dataset)
-    if projection is None:
-        return dataset
+    projection = native_grid_projection_attrs(dataset) or default_cerra_lambert_projection()
 
     x_values, y_values = projected_axis_coordinates(projection, x_size=dataset.sizes["x"], y_size=dataset.sizes["y"])
     return dataset.assign_coords(
